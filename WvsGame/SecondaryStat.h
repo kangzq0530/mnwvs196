@@ -5,15 +5,33 @@
 #include "BasicStat.h"
 #include "TemporaryStat.h"
 
-#define ADD_TEMPORARY(stat) int n##stat, t##stat, r##stat, b##stat, x##stat, c##stat, y##stat;
+#define ADD_TEMPORARY(stat) int nLv##stat = 0, n##stat = 0, t##stat = 0, r##stat = 0, b##stat = 0, x##stat = 0, c##stat = 0, y##stat = 0;
 
+class User;
 struct GA_Character;
 class OutPacket;
+class InPacket;
 
 class SecondaryStat : public BasicStat
 {
 public:
+	//m[TS Flag, [tDuration, a[nValue, rValue, tValue, nSLV]]]
 	std::map<int, std::pair<long long int, std::vector<int*>>> m_mSetByTS;
+
+	//m[TS Flag, m[rValue, [tDuration, [nValue, rValue, tValue, nSLV]]]]
+	std::map<int, std::map<int,	std::pair<long long int, std::vector<int>>>> m_mSetByIndieTS;
+
+	struct StopForceAtom
+	{
+		int nIdx = 0, nCount = 0, nWeaponID = 0;
+		std::vector<int> aAngelInfo;
+
+		void CreateStopForceAtom(User *pUser, int nSkillID);
+		void Encode(OutPacket *oPacket);
+		void OnTempestBladesAttack(User *pUser, InPacket *iPacket);
+	};
+
+	StopForceAtom sStopForceAtomInfo;
 
 	ADD_TEMPORARY(IndiePAD);
 	ADD_TEMPORARY(IndieMAD);
@@ -519,11 +537,17 @@ public:
 	SecondaryStat();
 	~SecondaryStat();
 
-	void SetFrom(int nFieldType, GA_Character* pChar, BasicStat* pBS, void *pFs, void* pNonBodyEquip, int nMHPForPvP, void* pPSD);
+	void SetFrom(GA_Character* pChar, BasicStat* pBS);
 	void EncodeForLocal(OutPacket *oPacket, TemporaryStat::TS_Flag& flag);
 	void EncodeForRemote(OutPacket *oPacket, TemporaryStat::TS_Flag& flag);
 	void EncodeIndieTempStat(OutPacket *oPacket, TemporaryStat::TS_Flag& flag);
 	bool EnDecode4Byte(TemporaryStat::TS_Flag& flag);
-	void ResetByTime(int tCur);
+	void ResetByTime(User* pUser, int tCur);
+
+	void DecodeInternal(User* pUser, InPacket *iPacket);
+	void EncodeInternal(User* pUser, OutPacket *oPacket);
+
+	void ChargeSurplusSupply(User* pUser, int nCount, int tUpdateTime);
+	void ChargeSmashStack(User* pUser, int tUpdateTime);
 };
 

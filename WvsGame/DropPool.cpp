@@ -5,9 +5,13 @@
 #include "Field.h"
 #include "User.h"
 #include "QWUInventory.h"
+#include "StaticFoothold.h"
+#include "WvsPhysicalSpace2D.h"
 #include "..\Database\GW_ItemSlotBase.h"
 #include "..\Database\GW_ItemSlotBundle.h"
-#include "Utility\DateTime\GameDateTime.h"
+#include "..\Database\GW_ItemSlotEquip.h"
+#include "..\WvsLib\DateTime\GameDateTime.h"
+#include "..\WvsLib\Memory\MemoryPoolMan.hpp"
 
 DropPool::DropPool(Field *pField)
 	: m_pField(pField)
@@ -23,7 +27,12 @@ DropPool::~DropPool()
 void DropPool::Create(Reward * reward, unsigned int dwOwnerID, unsigned int dwOwnPartyID, int nOwnType, unsigned int dwSourceID, int x1, int y1, int x2, int y2, int tDelay, int bAdmin, int nPos, bool bByPet)
 {
 	std::lock_guard<std::mutex> dropPoolock(m_mtxDropPoolLock);
-	Drop *pDrop = new Drop();
+	auto pFoothold = m_pField->GetSpace2D()->GetFootholdUnderneath(x2, y1 - 100, &y2);
+	if (!pFoothold || m_pField->GetSpace2D()->IsPointInMBR(x2, y2, true))
+	{
+		pFoothold = m_pField->GetSpace2D()->GetFootholdClosest(m_pField, x2, y1, &x2, &y2, x1);
+	}
+	Drop *pDrop = AllocObj(Drop);
 	pDrop->Init(++m_nDropIdCounter, reward, dwOwnerID, dwOwnPartyID, nOwnType, dwSourceID, x1, y1, x2, y2, bByPet);
 	auto pItem = pDrop->GetItem();
 	if (pItem != nullptr && reward->GetType() == 1 && reward->GetPeriod() != 0)
@@ -44,7 +53,10 @@ void DropPool::Create(Reward * reward, unsigned int dwOwnerID, unsigned int dwOw
 		pDrop->MakeEnterFieldPacket(&oPacket, 3, tDelay);
 		if (!dwOwnerID)
 		{
-			delete pItem;
+			if (pItem->nType == GW_ItemSlotBase::EQUIP)
+				FreeObj((GW_ItemSlotEquip*)(pItem));
+			else
+				FreeObj((GW_ItemSlotBundle*)(pItem));
 			pDrop->m_pItem = nullptr;
 		}
 		m_pField->BroadcastPacket(&oPacket);
@@ -86,7 +98,7 @@ void DropPool::OnPickUpRequest(User * pUser, InPacket * iPacket)
 	int nY = iPacket->Decode2();
 	int nObjectID = iPacket->Decode4();
 	bool bDropRemained = false;
-	std::lock_guard<std::mutex> dropPoolock(m_mtxDropPoolLock);
+	std::lock_guard<std::mutex> dropPoolLock(m_mtxDropPoolLock);
 	auto findIter = m_mDrop.find(nObjectID);
 	if (findIter != m_mDrop.end())
 	{
@@ -100,17 +112,9 @@ void DropPool::OnPickUpRequest(User * pUser, InPacket * iPacket)
 		else 
 		{
 			nItemID = pDrop->m_pItem->nItemID;
-			if (!pDrop->m_pItem->IsTreatSingly())
+			if (!ItemInfo::IsTreatSingly(pDrop->m_pItem->nItemID, pDrop->m_pItem->liExpireDate))
 				nCount = ((GW_ItemSlotBundle*)pDrop->m_pItem)->nNumber;
 			bDropRemained = (QWUInventory::PickUpItem(pUser, false, pDrop->m_pItem) == false);
-		}
-
-		if (!bDropRemained) 
-		{
-			OutPacket oPacket;
-			pDrop->MakeLeaveFieldPacket(&oPacket, 2, pUser->GetUserID());
-			m_pField->SplitSendPacket(&oPacket, nullptr);
-			m_mDrop.erase(nObjectID);
 		}
 		pUser->SendDropPickUpResultPacket(
 			!bDropRemained,
@@ -119,5 +123,15 @@ void DropPool::OnPickUpRequest(User * pUser, InPacket * iPacket)
 			nCount,
 			false
 		);
+
+		if (!bDropRemained)
+		{
+			OutPacket oPacket;
+			pDrop->MakeLeaveFieldPacket(&oPacket, 2, pUser->GetUserID());
+			m_pField->SplitSendPacket(&oPacket, nullptr);
+			//delete pDrop->m_pItem;
+			FreeObj(pDrop);
+			m_mDrop.erase(nObjectID);
+		}
 	}
 }

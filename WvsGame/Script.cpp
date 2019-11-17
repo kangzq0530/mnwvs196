@@ -4,25 +4,11 @@
 #include "..\Database\GA_Character.hpp"
 #include "..\Database\GW_CharacterStat.h"
 #include "QWUser.h"
-#include "..\ScriptLib\lvm.h"
-#include "..\Common\Net\InPacket.h"
-#include "..\Common\Net\OutPacket.h"
-
-luaL_Reg Script::SelfMetatable[] = {
-	{ "askAvatar", SelfAskAvatar },
-	{ "askText", SelfAskText },
-	{ "askYesNo", SelfAskYesNo },
-	{ "askNumber", SelfAskNumber },
-	{ "askMenu", SelfAskMenu },
-	{ "sayNext", SelfSayNext },
-	{ "say", SelfSay },
-	{ "pushArray", SelfPushArray },
-	{ NULL, NULL }
-};
-
-luaL_Reg Script::SelfTable[] = {
-	{ NULL, NULL }
-};
+#include "..\WvsLib\Script\lvm.h"
+#include "..\WvsLib\Net\InPacket.h"
+#include "..\WvsLib\Net\OutPacket.h"
+#include "..\WvsLib\Logger\WvsLogger.h"
+#include "..\WvsLib\Memory\MemoryPoolMan.hpp"
 
 Script * Script::GetSelf(lua_State * L)
 {
@@ -30,318 +16,131 @@ Script * Script::GetSelf(lua_State * L)
 	return (Script*)(ptr);
 }
 
+void Script::DestroySelf(lua_State * L, Script * p)
+{
+	//FreeObj(p);
+}
+
+void Script::Register(lua_State * L)
+{
+	luaL_Reg SysMetatable[] = {
+		{ NULL, NULL }
+	};
+
+	luaL_Reg SysTable[] = {
+		{ NULL, NULL }
+	};
+
+	luaW_register<Script>(L, "System", 
+		SysTable, 
+		SysMetatable,
+		&(Script::GetSelf),
+		&(Script::DestroySelf));
+}
+
 void Script::Wait()
 {
-	std::unique_lock<std::mutex> lock(m_mtxWaitLock);
-	printf("Ready to wait\n");
-	m_cndVariable.wait(lock);
-	printf("Finish wait\n");
+	lua_yield(L, 0);
 }
 
 void Script::Notify()
 {
-	std::lock_guard<std::mutex> lock(m_mtxWaitLock);
-	m_cndVariable.notify_one();
+	Run();
 }
 
-Script::Script(const std::string & file, int nNpcID) :
+Script::Script(const std::string & file, int nNpcID, const std::vector<void(*)(lua_State*)>& aReg) :
 	L(luaL_newstate())
 {
+	C = lua_newthread(L);
 	m_fileName = file;
 	m_nID = nNpcID;
-	lua_pushinteger(L, (long long int)(this));
-	lua_setglobal(L, "selfPtr");
-	lua_pushinteger(L, (long long int)(m_pUser));
-	lua_setglobal(L, "userPtr");
-	LuaRegisterSelf(L);
-	if (luaL_loadfile(L, m_fileName.c_str()))
-		std::cout << "Error, can't open script" << std::endl;
+	L->selfPtr = this;
+	Register(L);
+	for (auto& f : aReg)
+		f(L);
 }
 
-int Script::LuaRegisterSelf(lua_State * L)
+int Script::GetID() const
 {
-	luaW_register<Script>(L, "Self", SelfTable, SelfMetatable, GetSelf);
-	return 1;
+	return m_nID;
 }
 
 void Script::SetUser(User * pUser)
 {
 	m_pUser = pUser;
+	if (pUser)
+	{
+		lua_pushinteger(L, pUser->GetUserID());
+		lua_setglobal(L, "userID");
+	}
 }
 
-std::thread * Script::GetThread()
+User * Script::GetUser()
 {
-	return m_pThread;
+	return m_pUser;
 }
 
-void Script::SetThread(std::thread * pThread)
+lua_State * Script::GetLuaState()
 {
-	m_pThread = pThread;
+	return L;
 }
 
-int Script::SelfSay(lua_State * L)
+lua_State * Script::GetLuaCoroutineState()
 {
-	Script* self = luaW_check<Script>(L, 1);
-	const char* text = luaL_checkstring(L, 2);
-	OutPacket oPacket;
-	oPacket.Encode2(0x56E);
-	oPacket.Encode1(4);
-	oPacket.Encode4(self->m_nID);
-	oPacket.Encode1(0);
-	oPacket.Encode1((char)ScriptType::OnSay); //OnSay
-	oPacket.Encode2(0);
-	oPacket.Encode1(0);
-	oPacket.EncodeStr(text);
-	oPacket.Encode1(0);
-	oPacket.Encode1(0);
-	oPacket.Encode4(0);
-	self->m_pUser->SendPacket(&oPacket);
-	self->Wait();
-	lua_pushstring(L, "");
-	return 1;
+	return C;
 }
 
-int Script::SelfAskAvatar(lua_State * L)
+Script::NPCConversationState & Script::GetConverstaionState()
 {
-	Script* self = luaW_check<Script>(L, 1);
-	const char* text = luaL_checkstring(L, 2);
-	self->m_nUserInput = luaL_checkinteger(L, 3);
-	OutPacket oPacket;
-	oPacket.Encode2(0x56E);
-	oPacket.Encode1(4);
-	oPacket.Encode4(self->m_nID);
-	oPacket.Encode1(0);
-	oPacket.Encode1((char)ScriptType::OnAskAvatar); //OnSay
-	oPacket.Encode2(0);
-	oPacket.Encode1(0);
-	oPacket.Encode1(0); //bAngelicBuster
-	oPacket.Encode1(0); //bZeroBeta
-	oPacket.EncodeStr(text);
-	oPacket.Encode1((char)self->m_aArrayObj.size());
-	for (auto& v : self->m_aArrayObj)
-		oPacket.Encode4(v);
-	self->m_pUser->SendPacket(&oPacket);
-	self->Wait();
-	lua_pushinteger(L, self->m_nUserInput);
+	return m_sState;
 }
 
-int Script::SelfAskText(lua_State * L)
+void Script::SetLastConversationInfo(const NPCConverstaionInfo & refInfo)
 {
-	Script* self = luaW_check<Script>(L, 1);
-	const char* text = luaL_checkstring(L, 2);
-	const char * defaultText = luaL_checkstring(L, 3);
-	int nMinValue = (int)luaL_checkinteger(L, 4);
-	int nMaxValue = (int)luaL_checkinteger(L, 5);
-	OutPacket oPacket;
-	oPacket.Encode2(0x56E);
-	oPacket.Encode1(4);
-	oPacket.Encode4(self->m_nID);
-	oPacket.Encode1(0);
-	oPacket.Encode1((char)ScriptType::OnAskText); //OnSay
-	oPacket.Encode2(0);
-	oPacket.Encode1(0);
-	oPacket.EncodeStr(text);
-	oPacket.EncodeStr(defaultText);
-	oPacket.Encode2(nMinValue);
-	oPacket.Encode2(nMaxValue);
-	self->m_pUser->SendPacket(&oPacket);
-	self->Wait();
-	lua_pushstring(L, self->m_strUserInput.c_str());
-	return 1;
+	m_sLastConversationInfo = refInfo;
 }
 
-int Script::SelfAskNumber(lua_State * L)
+Script::NPCConverstaionInfo & Script::GetLastConversationInfo()
 {
-	Script* self = luaW_check<Script>(L, 1);
-	const char* text = luaL_checkstring(L, 2);
-	int nDefaultValue = (int)luaL_checkinteger(L, 3);
-	int nMinValue = (int)luaL_checkinteger(L, 4);
-	int nMaxValue = (int)luaL_checkinteger(L, 5);
-	OutPacket oPacket;
-	oPacket.Encode2(0x56E);
-	oPacket.Encode1(4);
-	oPacket.Encode4(self->m_nID);
-	oPacket.Encode1(0);
-	oPacket.Encode1((char)ScriptType::OnAskNumber); //OnSay
-	oPacket.Encode2(0);
-	oPacket.Encode1(0);
-	oPacket.EncodeStr(text);
-	oPacket.Encode4(nDefaultValue);
-	oPacket.Encode4(nMinValue);
-	oPacket.Encode4(nMaxValue);
-	self->m_pUser->SendPacket(&oPacket);
-	self->Wait();
-	lua_pushinteger(L, self->m_nUserInput);
-	return 1;
-}
-
-int Script::SelfAskYesNo(lua_State * L)
-{
-	Script* self = luaW_check<Script>(L, 1);
-	const char* text = luaL_checkstring(L, 2);
-	OutPacket oPacket;
-	oPacket.Encode2(0x56E);
-	oPacket.Encode1(4);
-	oPacket.Encode4(self->m_nID);
-	oPacket.Encode1(0);
-	oPacket.Encode1((char)ScriptType::OnAskYesNo); //OnSay
-	oPacket.Encode2(0);
-	oPacket.Encode1(0);
-	oPacket.EncodeStr(text);
-	self->m_pUser->SendPacket(&oPacket);
-	self->Wait();
-	lua_pushinteger(L, self->m_nUserInput);
-	return 1;
-}
-
-int Script::SelfAskMenu(lua_State * L)
-{
-	Script* self = luaW_check<Script>(L, 1);
-	const char* text = luaL_checkstring(L, 2);
-	OutPacket oPacket;
-	oPacket.Encode2(0x56E);
-	oPacket.Encode1(4);
-	oPacket.Encode4(self->m_nID);
-	oPacket.Encode1(0);
-	oPacket.Encode1((char)ScriptType::OnAskMenu); //OnSay
-	oPacket.Encode2(0);
-	oPacket.Encode1(0);
-	oPacket.EncodeStr(text);
-	self->m_pUser->SendPacket(&oPacket);
-	self->Wait();
-	lua_pushinteger(L, self->m_nUserInput);
-	return 1;
-}
-
-int Script::SelfPushArray(lua_State * L)
-{
-	Script* self = luaW_check<Script>(L, 1);
-	int nValue = (int)luaL_checkinteger(L, 2);
-	self->m_aArrayObj.push_back(nValue);
-	return 1;
-}
-
-int Script::SelfSayNext(lua_State * L)
-{
-	Script* self = luaW_check<Script>(L, 1);
-	const char* text = luaL_checkstring(L, 2);
-	int nCurPage = (int)luaL_checkinteger(L, 3);
-	int nNextPage = (int)luaL_checkinteger(L, 4);
-	OutPacket oPacket;
-	oPacket.Encode2(0x56E);
-	oPacket.Encode1(4);
-	oPacket.Encode4(self->m_nID);
-	oPacket.Encode1(0);
-	oPacket.Encode1((char)ScriptType::OnSay); //OnSay
-	oPacket.Encode2(0);
-	oPacket.Encode1(0);
-	oPacket.EncodeStr(text);
-	oPacket.Encode1(nCurPage > 0 ? 1 : 0);
-	oPacket.Encode1(nCurPage < nNextPage ? 1 : 0);
-	oPacket.Encode4(0);
-	self->m_pUser->SendPacket(&oPacket);
-
-	self->Wait();
-	lua_pushinteger(L, nCurPage + (self->m_nUserInput == 0 ? -1 : 1));
-	return 1;
+	return m_sLastConversationInfo;
 }
 
 void Script::Run()
 {
-	lua_pcall(L, 0, 0, 0);
-	std::lock_guard<std::mutex> lock(m_mtxWaitLock);
-	m_pUser->SetScript(nullptr);
-	if (L) lua_close(L);
-	m_bDone = true;
+	//m_bResume = 1代表被yield的腳本繼續執行並且把對話結果壓入堆疊中
+	auto nResult = lua_resume(L, C, m_sState.m_bResume ? 1 : 0);
+	m_sState.m_bResume = false;
+	if (nResult == LUA_OK || nResult != LUA_YIELD)
+		Abort();
 }
 
 void Script::Abort()
 {
-	try {
-		luaL_error(L, "abort");
-	}
-	catch (...) {}
-	std::lock_guard<std::mutex> lock(m_mtxWaitLock);
-	m_pUser->SetScript(nullptr);
-	if (L) lua_close(L);
+	if(m_pUser)
+		m_pUser->SetScript(nullptr);
+	if (L) 
+		lua_close(L);
 	m_bDone = true;
 }
 
 bool Script::IsDone()
 {
-	std::lock_guard<std::mutex> lock(m_mtxWaitLock);
 	return m_bDone;
+}
+
+bool Script::Init()
+{
+	if (luaL_loadfile(L, m_fileName.c_str())) 
+	{
+		WvsLogger::LogRaw(WvsLogger::LEVEL_ERROR, "Error, Unable to open the specific script.\n");
+		return false;
+	}
+	return true;
 }
 
 void Script::OnPacket(InPacket * iPacket)
 {
-	char nMsgType = iPacket->Decode1(), nAction = 0;
-	switch (nMsgType)
-	{
-		case ScriptType::OnSay:
-		{
-			nAction = iPacket->Decode1();
-			if (nAction == (char)0xFF)
-				Abort();
-			else if (nAction == 0)
-				m_nUserInput = 0;
-			else if (nAction == 1)
-				m_nUserInput = 1;
-			break;
-		}
-		case ScriptType::OnAskYesNo:
-		{
-			nAction = iPacket->Decode1();
-			if (nAction == (char)0xFF)
-				Abort();
-			else if (nAction == 0)
-				m_nUserInput = 0;
-			else if (nAction == 1)
-				m_nUserInput = 1;
-			break;
-		}
-		case ScriptType::OnAskText:
-		{
-			nAction = iPacket->Decode1();
-			if (nAction == 0)
-				Abort();
-			else if (nAction == 1)
-				m_strUserInput = iPacket->DecodeStr();
-			break;
-		}
-		case ScriptType::OnAskNumber:
-		{
-			nAction = iPacket->Decode1();
-			if (nAction == 0)
-				Abort();
-			else if (nAction == 1)
-				m_nUserInput = iPacket->Decode4();
-			break;
-		}
-		case ScriptType::OnAskMenu:
-		{
-			nAction = iPacket->Decode1();
-			if (nAction == 0)
-				Abort();
-			else if (nAction == 1)
-				m_nUserInput = iPacket->Decode4();
-			break;
-		}
-		case ScriptType::OnAskAvatar:
-		{
-			iPacket->Decode1();
-			iPacket->Decode1();
-			nAction = iPacket->Decode1();
-			if (nAction == 0)
-				Abort();
-			else if (nAction == 1) 
-			{
-				m_pUser->SendCharacterStat(false, QWUser::SetHair(m_pUser, m_aArrayObj[iPacket->Decode1()]));
-				m_aArrayObj.clear();
-			}
-			break;
-		}
-	}
+	m_pOnPacketInvoker(iPacket, this, L);
 }
 
 Script::~Script()

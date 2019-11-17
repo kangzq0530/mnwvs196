@@ -88,8 +88,8 @@
       </PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
-      <PreprocessorDefinitions>_DEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>I:\Programming\Utility\poco-1.7.8-all\poco-1.7.8-all\Foundation\include;I:\Programming\Utility\poco-1.7.8-all\poco-1.7.8-all\Data\include;I:\Programming\Utility\poco-1.7.8-all\poco-1.7.8-all\Data\MySQL\include;..\Common\;I:\Programming\Utility\boost_1_63_0\</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>DBLIB;_DEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>..\Library\poco-1.7.8-all\Foundation\include;..\Library\poco-1.7.8-all\Data\include;..\Library\poco-1.7.8-all\Data\MySQL\include;..\Common\;..\Library\boost_1_63_0\</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -119,8 +119,9 @@
       <Optimization>MaxSpeed</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <PreprocessorDefinitions>NDEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>I:\Programming\Utility\poco-1.7.8-all\poco-1.7.8-all\Foundation\include;I:\Programming\Utility\poco-1.7.8-all\poco-1.7.8-all\Data\include;I:\Programming\Utility\poco-1.7.8-all\poco-1.7.8-all\Data\MySQL\include;..\Common\;I:\Programming\Utility\boost_1_63_0\</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>DBLIB;NDEBUG;_LIB;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>..\Library\poco-1.7.8-all\Foundation\include;..\Library\poco-1.7.8-all\Data\include;..\Library\poco-1.7.8-all\Data\MySQL\include;..\Common\;..\Library\boost_1_63_0</AdditionalIncludeDirectories>
+      <AdditionalOptions>/MP %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -128,7 +129,9 @@
       <OptimizeReferences>true</OptimizeReferences>
     </Link>
     <Lib>
-      <AdditionalLibraryDirectories>I:\Programming\Utility\poco-1.7.8-all\poco-1.7.8-all\Foundation;I:\Programming\Utility\poco-1.7.8-all\poco-1.7.8-all\Foundation\x64\release_static_md;I:\Programming\Utility\poco-1.7.8-all\poco-1.7.8-all\lib64;..\Common;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>..\Library\poco-1.7.8-all\lib64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>
+      </AdditionalDependencies>
     </Lib>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -138,32 +141,44 @@
     <ClInclude Include="CharacterDBAccessor.h" />
     <ClInclude Include="DBConstants.h" />
     <ClInclude Include="GA_Character.hpp" />
+    <ClInclude Include="GW_Account.h" />
     <ClInclude Include="GW_Avatar.hpp" />
+    <ClInclude Include="GW_CashItemInfo.h" />
     <ClInclude Include="GW_CharacterLevel.h" />
     <ClInclude Include="GW_CharacterList.hpp" />
     <ClInclude Include="GW_CharacterMoney.h" />
+    <ClInclude Include="GW_CharacterSlotCount.h" />
     <ClInclude Include="GW_CharacterStat.h" />
+    <ClInclude Include="GW_FuncKeyMapped.h" />
     <ClInclude Include="GW_ItemSlotBase.h" />
     <ClInclude Include="GW_ItemSlotBundle.h" />
     <ClInclude Include="GW_ItemSlotEquip.h" />
+    <ClInclude Include="GW_ItemSlotPet.h" />
     <ClInclude Include="GW_MobReward.h" />
     <ClInclude Include="GW_QuestRecord.h" />
+    <ClInclude Include="GW_Shop.h" />
     <ClInclude Include="GW_SkillRecord.h" />
     <ClInclude Include="WvsUnified.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CharacterDBAccessor.cpp" />
     <ClCompile Include="GA_Character.cpp" />
+    <ClCompile Include="GW_Account.cpp" />
     <ClCompile Include="GW_Avatar.cpp" />
+    <ClCompile Include="GW_CashItemInfo.cpp" />
     <ClCompile Include="GW_CharacterLevel.cpp" />
     <ClCompile Include="GW_CharacterList.cpp" />
     <ClCompile Include="GW_CharacterMoney.cpp" />
+    <ClCompile Include="GW_CharacterSlotCount.cpp" />
     <ClCompile Include="GW_CharacterStat.cpp" />
+    <ClCompile Include="GW_FuncKeyMapped.cpp" />
     <ClCompile Include="GW_ItemSlotBase.cpp" />
     <ClCompile Include="GW_ItemSlotBundle.cpp" />
     <ClCompile Include="GW_ItemSlotEquip.cpp" />
+    <ClCompile Include="GW_ItemSlotPet.cpp" />
     <ClCompile Include="GW_MobReward.cpp" />
     <ClCompile Include="GW_QuestRecord.cpp" />
+    <ClCompile Include="GW_Shop.cpp" />
     <ClCompile Include="GW_SkillRecord.cpp" />
     <ClCompile Include="WvsUnified.cpp" />
   </ItemGroup>

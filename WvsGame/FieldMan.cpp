@@ -1,11 +1,23 @@
 #include "FieldMan.h"
-#include "..\WvsLib\WzResMan.hpp"
+#include "..\WvsLib\Wz\WzResMan.hpp"
 #include "..\WvsLib\Memory\MemoryPoolMan.hpp"
+#include "..\WvsLib\Logger\WvsLogger.h"
+#include "TimerThread.h"
+
+#include "Field.h"
+#include "FieldSet.h"
 #include "PortalMap.h"
+#include "ReactorPool.h"
+#include "WvsPhysicalSpace2D.h"
 
 #include <mutex>
+#include <filesystem>
+#include <fstream>
+#include <streambuf>
 
 std::mutex fieldManMutex;
+
+namespace fs = std::experimental::filesystem;
 
 FieldMan::FieldMan()
 {
@@ -13,6 +25,12 @@ FieldMan::FieldMan()
 
 FieldMan::~FieldMan()
 {
+}
+
+FieldMan * FieldMan::GetInstance()
+{
+	static FieldMan *sPtrFieldMan = new FieldMan();
+	return sPtrFieldMan;
 }
 
 void FieldMan::RegisterField(int nFieldID)
@@ -44,48 +62,92 @@ void FieldMan::FieldFactory(int nFieldID)
 	std::string fieldStr = std::to_string(nFieldID);
 	while (fieldStr.size() < 9)
 		fieldStr = "0" + fieldStr;
-	Field* newField = new Field();
 	auto& mapWz = stWzResMan->GetWz(Wz::Map)["Map"]["Map" + std::to_string(nFieldID / 100000000)][fieldStr];
-	mapWz = stWzResMan->GetWz(Wz::Map)["Map"]["Map" + std::to_string(nFieldID / 100000000)][std::to_string(nFieldID)];
+	if (mapWz == WZ::Node())
+		return;
+
 	auto& infoData = mapWz["info"];
+	Field* newField = AllocObj(Field);
+	newField->SetFieldID(nFieldID);
 
-	//if (infoData) {
-		newField->SetCould(((int)infoData["cloud"] != 0));
-		newField->SetTown(((int)infoData["town"] != 0));
-		newField->SetSwim(((int)infoData['swim'] != 0));
-		newField->SetFly(((int)infoData['fly'] != 0));
-		newField->SetReturnMap(infoData["returnMap"]);
-		newField->SetForcedReturn(infoData["forcedReturn"]);
-		newField->SetMobRate(infoData["mobRate"]);
-		newField->SetFieldType(infoData["fieldType"]);
-		newField->SetFieldLimit(infoData["fieldLimit"]);
-		newField->SetCreateMobInterval(infoData["createMobInterval"]);
-		newField->SetFiexdMobCapacity(infoData["fixedMobCapacity"]);
+	newField->SetCould(((int)infoData["cloud"] != 0));
+	newField->SetTown(((int)infoData["town"] != 0));
+	newField->SetSwim(((int)infoData['swim'] != 0));
+	newField->SetFly(((int)infoData['fly'] != 0));
+	newField->SetReturnMap(infoData["returnMap"]);
+	newField->SetForcedReturn(infoData["forcedReturn"]);
+	newField->SetMobRate(infoData["mobRate"]);
+	newField->SetFieldType(infoData["fieldType"]);
+	newField->SetFieldLimit(infoData["fieldLimit"]);
+	newField->SetCreateMobInterval(infoData["createMobInterval"]);
+	newField->SetFiexdMobCapacity(infoData["fixedMobCapacity"]);
+	newField->SetFirstUserEnter(infoData["onFirstUerEnter"]);
+	newField->SetUserEnter(infoData["onUserEnter"]);
 
-		//¦a¹Ïªø¼e
-		int mapSizeX = abs((int)infoData["VRRight"] - (int)infoData["VRLeft"]);
-		int mapSizeY = abs((int)infoData["VRTop"] - (int)infoData["VRBottom"]);
+	newField->GetPortalMap()->RestorePortal(newField, &(mapWz["portal"]));
+	newField->GetReactorPool()->Init(newField, &(mapWz["reactor"]));
+	RestoreFoothold(newField, &(mapWz["foothold"]), nullptr, &infoData);
+	newField->InitLifePool();
 
-		newField->SetFirstUserEnter(infoData["onFirstUerEnter"]);
-		newField->SetUserEnter(infoData["onUserEnter"]);
+	m_mField[nFieldID] = newField;
+	TimerThread::RegisterField(newField);
+}
 
-		newField->SetMapSizeX(mapSizeX);
-		newField->SetMapSizeY(mapSizeY);
-		printf("New Field Size X = %d, Y = %d\n", (int)infoData["forcedReturn"], mapSizeY);
-	//}
-	newField->GetPortalMap()->RestorePortal(newField, mapWz["portal"]);
+void FieldMan::LoadFieldSet()
+{
+	std::string strPath = "./DataSrv/FieldSet";
+	for (auto &file : fs::directory_iterator(strPath))
+	{
+		FieldSet *pFieldSet = AllocObj( FieldSet );
+		std::wstring wStr = file.path();
+		//Convert std::wstring to std::string, note that the path shouldn't include any NON-ASCII character.
+		pFieldSet->Init(std::string{ wStr.begin(), wStr.end() });
+		m_mFieldSet[pFieldSet->GetFieldSetName()] = pFieldSet;
 
-	mField[nFieldID] = newField;
-	mField[nFieldID]->SetFieldID(nFieldID);
-	mField[nFieldID]->InitLifePool();
+		std::cout << file << std::endl; 
+		std::ifstream t(file.path());
+		std::string str((std::istreambuf_iterator<char>(t)),
+			std::istreambuf_iterator<char>());
+		std::cout << str << std::endl;
+	}
 }
 
 Field* FieldMan::GetField(int nFieldID)
 {
 	//printf("Get Field ID = %d\n", nFieldID);
 	//Prevent Double Registerations Or Enter On-Registering Map
-	auto fieldResult = mField.find(nFieldID);
-	if (fieldResult == mField.end())
+	auto fieldResult = m_mField.find(nFieldID);
+	if (fieldResult == m_mField.end())
 		RegisterField(nFieldID);
-	return mField[nFieldID];
+	return m_mField[nFieldID];
+}
+
+FieldSet * FieldMan::GetFieldSet(const std::string & sFieldSetName)
+{
+	auto fieldResult = m_mFieldSet.find(sFieldSetName);
+	if (fieldResult == m_mFieldSet.end())
+		return nullptr;
+	return fieldResult->second;
+}
+
+void FieldMan::RestoreFoothold(Field * pField, void * pPropFoothold, void * pLadderOrRope, void * pInfo)
+{
+	auto& refInfo = *((WZ::Node*)pInfo);
+	int nFieldLink = (nFieldLink = atoi(((std::string)refInfo["link"]).c_str()));
+	if ((nFieldLink != 0))
+	{
+		auto fieldStr = StringUtility::LeftPadding(std::to_string(nFieldLink), 9, '0');
+		auto& mapWz = stWzResMan->GetWz(Wz::Map)["Map"]["Map" + std::to_string(nFieldLink / 100000000)][fieldStr];
+		pInfo = &(mapWz["info"]);
+		pPropFoothold = &(mapWz["foothold"]);
+	}
+	pField->GetSpace2D()->Load(pPropFoothold, pLadderOrRope, pInfo);
+	pField->SetMapSize(
+		pField->GetSpace2D()->GetRect().left,
+		pField->GetSpace2D()->GetRect().top
+	);
+	pField->SetLeftTop(
+		pField->GetSpace2D()->GetRect().right - pField->GetSpace2D()->GetRect().left,
+		pField->GetSpace2D()->GetRect().bottom - pField->GetSpace2D()->GetRect().top
+	);
 }

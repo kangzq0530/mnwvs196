@@ -1,7 +1,7 @@
 #pragma once
 
 #include <map>
-#include "..\WvsLib\WzResMan.hpp"
+#include "..\WvsLib\Wz\WzResMan.hpp"
 
 class GW_MobReward;
 
@@ -10,9 +10,9 @@ class MobTemplate
 	static std::map<int, MobTemplate*>* m_MobTemplates;
 	static WZ::Node* m_MobWzProperty;
 
-	GW_MobReward* m_pReward;
 
 public:
+	GW_MobReward* m_pReward;
 	MobTemplate();
 	~MobTemplate();
 

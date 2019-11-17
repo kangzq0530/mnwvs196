@@ -1,23 +1,26 @@
 #pragma once
-#include "Net\WvsBase.h"
-#include "Net\WorldInfo.h"
+#include "..\WvsLib\Net\WvsBase.h"
+#include "..\WvsLib\Net\WorldInfo.h"
+#include "..\WvsLib\Common\ConfigLoader.hpp"
 
 #include "Center.h"
 #include <thread>
+#include <string>
 #include <map>
-#include "User.h"
+
+class User;
 
 class WvsGame : public WvsBase
 {
+	ConfigLoader* m_pCfgLoader;
+
 	std::mutex m_mUserLock;
-
-	int nExternalPort = 0;
-	int aExternalIP[4];
-	std::map<int, std::shared_ptr<User>> mUserMap;
-
-	std::shared_ptr<Center> aCenterPtr;
-	asio::io_service* aCenterServerService;
-	std::thread* aCenterWorkThread;
+	std::map<int, std::shared_ptr<User>> m_mUserMap;
+	std::string m_sCenterIP;
+	std::shared_ptr<Center> m_pCenterInstance;
+	asio::io_service* m_pCenterServerService;
+	std::thread* m_pCenterWorkThread;
+	int m_nChannelID = 0, m_nCenterPort = 0;
 
 	void WvsGame::CenterAliveMonitor();
 
@@ -25,25 +28,18 @@ public:
 	WvsGame();
 	~WvsGame();
 
-	std::shared_ptr<Center>& GetCenter()
-	{
-		return aCenterPtr;
-	}
-
-	//WvsGame 只允許一個Center
-	int GetCenterCount() const { return 1; }
+	std::shared_ptr<Center>& GetCenter();
 
 	void ConnectToCenter(int nCenterIdx);
+
+	void SetConfigLoader(ConfigLoader* pCfg);
 	void WvsGame::InitializeCenter();
 
 	void OnUserConnected(std::shared_ptr<User> &pUser);
 	void OnNotifySocketDisconnected(SocketBase *pSocket);
 
-	void SetExternalIP(const std::string& ip);
-	void SetExternalPort(short nPort);
 
-	int* GetExternalIP() const;
-	short GetExternalPort() const;
+	int GetChannelID() const;
 
 	User* FindUser(int nUserID);
 };

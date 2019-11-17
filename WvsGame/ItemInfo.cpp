@@ -1,9 +1,12 @@
 #include "ItemInfo.h"
-#include "..\WvsLib\WzResMan.hpp"
+#include "..\WvsLib\Wz\WzResMan.hpp"
 #include "..\Database\GW_ItemSlotBase.h"
 #include "..\Database\GW_ItemSlotEquip.h"
 #include "..\Database\GW_ItemSlotBundle.h"
-#include "..\Common\Utility\Random\Rand32.h"
+#include "..\Database\GW_ItemSlotPet.h"
+#include "..\WvsLib\Random\Rand32.h"
+#include "..\WvsLib\Logger\WvsLogger.h"
+#include "..\WvsLib\Memory\MemoryPoolMan.hpp"
 
 ItemInfo::ItemInfo()
 {
@@ -22,37 +25,67 @@ ItemInfo * ItemInfo::GetInstance()
 
 void ItemInfo::Initialize()
 {
-	IterateMapString();
-	printf("[ItemInfo::Initialize]開始載入所有物品名稱[IterateItemString Start]....\n");
+	IterateMapString(nullptr);
+	LoadItemSellPriceByLv();
+	WvsLogger::LogRaw("[ItemInfo::Initialize]開始載入所有物品名稱[IterateItemString Start]....\n");
 	IterateItemString(nullptr);
-	printf("[ItemInfo::Initialize]物品名稱載入完成[IterateItemString Done]....\n");
+	WvsLogger::LogRaw("[ItemInfo::Initialize]物品名稱載入完成[IterateItemString Done]....\n");
 
 	static auto& eqpWz = stWzResMan->GetWz(Wz::Character);
-	printf("[ItemInfo::Initialize]開始載入所有裝備[IterateEquipItem Start]....\n");
+	WvsLogger::LogRaw("[ItemInfo::Initialize]開始載入所有裝備[IterateEquipItem Start]....\n");
 	IterateEquipItem(&eqpWz);
-	printf("[ItemInfo::Initialize]裝備載入完成[IterateEquipItem Done]....\n");
+	WvsLogger::LogRaw("[ItemInfo::Initialize]裝備載入完成[IterateEquipItem Done]....\n");
 
-	printf("[ItemInfo::Initialize]開始載入所有物品[IterateBundleItem Start]....\n");
+	WvsLogger::LogRaw("[ItemInfo::Initialize]開始載入所有物品[IterateBundleItem Start]....\n");
 	IterateBundleItem();
-	printf("[ItemInfo::Initialize]物品載入完成[IterateBundleItem Done]....\n");
-	IterateCashItem();
+	WvsLogger::LogRaw("[ItemInfo::Initialize]物品載入完成[IterateBundleItem Done]....\n");
+	//IterateCashItem();
+	IteratePetItem();
 	RegisterSpecificItems();
 	RegisterNoRollbackItem();
 	RegisterSetHalloweenItem();
 	stWzResMan->ReleaseMemory();
-	printf("[ItemInfo::Initialize]釋放ItemInfo所有Wz記憶體[ReleaseMemory Done]....\n");
+	WvsLogger::LogRaw("[ItemInfo::Initialize]釋放ItemInfo所有Wz記憶體[ReleaseMemory Done]....\n");
 }
 
-void ItemInfo::IterateMapString()
+void ItemInfo::LoadItemSellPriceByLv()
 {
+	auto& info = stWzResMan->GetWz(Wz::Item)["ItemSellPriceStandard"]["400"];
+	for (auto& lvl : info)
+		m_mItemSellPriceByLv[atoi(lvl.Name().c_str())] = (int)lvl;
+}
+
+void ItemInfo::IterateMapString(void *dataNode)
+{
+	static WZ::Node Img[] = {
+		stWzResMan->GetWz(Wz::String)["Map"]
+	};
+	if (dataNode == nullptr)
+		for (auto& img : Img)
+			IterateMapString((void*)&img);
+	else
+	{
+		auto& dataImg = (*((WZ::Node*)dataNode));
+		for (auto& img : dataImg)
+		{
+			if (!isdigit(img.Name()[0]) || atoi(img.Name().c_str()) < 1000)
+				IterateMapString((void*)&img);
+			else
+				m_mMapString[atoi(img.Name().c_str())] = img["mapName"];
+		}
+	}
 }
 
 void ItemInfo::IterateItemString(void *dataNode)
 {
-	static WZ::Node Img[] = { stWzResMan->GetWz(Wz::String)["Eqp"]
-		, stWzResMan->GetWz(Wz::String)["Etc"]
-		, stWzResMan->GetWz(Wz::String)["Consume"]
-		, stWzResMan->GetWz(Wz::String)["Ins"] };
+	static WZ::Node Img[] = { 
+		stWzResMan->GetWz(Wz::String)["Eqp"], 
+		stWzResMan->GetWz(Wz::String)["Etc"], 
+		stWzResMan->GetWz(Wz::String)["Consume"], 
+		stWzResMan->GetWz(Wz::String)["Ins"],
+		stWzResMan->GetWz(Wz::String)["Cash"],
+		stWzResMan->GetWz(Wz::String)["Pet"]
+	};
 	if (dataNode == nullptr)
 		for (auto& img : Img)
 			IterateItemString((void*)&img);
@@ -76,14 +109,20 @@ void ItemInfo::IterateEquipItem(void *dataNode)
 	
 	for (auto& data : dataImg)
 	{
+		if (data.Name() == "Hair" || data.Name() == "Face" || data.Name() == "Afterimage")
+			continue;
 		if (!isdigit(data.Name()[0])) //展開資料夾
+		{
+			clock_t tStart = clock();
 			IterateEquipItem((void*)(&data));
+			//printf("%s loading : %.2fs\n", data.Name().c_str(), (double)(clock() - tStart) / CLOCKS_PER_SEC);
+		}
 		else
 		{
 			nItemID = atoi(data.Name().c_str());
-			if (nItemID < 1000)
+			if (nItemID < 20000)
 				continue;
-			ItemInfo::EquipItem* pNewEquip = new ItemInfo::EquipItem();
+			EquipItem* pNewEquip = AllocObj(EquipItem);
 			pNewEquip->nItemID = nItemID;
 			pNewEquip->sItemName = m_mItemString[nItemID];
 			RegisterEquipItemInfo(pNewEquip, nItemID, (void*)&(data));
@@ -106,14 +145,21 @@ void ItemInfo::IterateBundleItem()
 			{
 				auto& infoImg = item["info"];
 				int nItemID = atoi(item.Name().c_str());
-				ItemInfo::BundleItem* pNewBundle = new ItemInfo::BundleItem;
+				BundleItem* pNewBundle = AllocObj( BundleItem );
 				LoadAbilityStat(pNewBundle->abilityStat, (void*)&infoImg);
+				if (pNewBundle->abilityStat.bCash)
+					m_mCashItem.insert({ nItemID, AllocObj(CashItem) });
+
 				pNewBundle->nItemID = nItemID;
 				pNewBundle->sItemName = m_mItemString[nItemID];
 				pNewBundle->nMaxPerSlot = infoImg["slotMax"];
 				pNewBundle->dSellUnitPrice = (double)infoImg["unitPrice"];
 				pNewBundle->nSellPrice = infoImg["price"];
 				pNewBundle->nRequiredLEV = infoImg["reqLevel"];
+				pNewBundle->nLevel = infoImg["lv"];
+				if (pNewBundle->nSellPrice == 0)
+					pNewBundle->nSellPrice = m_mItemSellPriceByLv[pNewBundle->nLevel];
+
 				pNewBundle->nPAD = infoImg["incPAD"]; //飛鏢
 				m_mBundleItem[nItemID] = pNewBundle;
 				int nItemCategory = nItemID / 10000;
@@ -160,10 +206,29 @@ void ItemInfo::IterateBundleItem()
 
 void ItemInfo::IteratePetItem()
 {
+	auto& img = stWzResMan->GetWz(Wz::Item)["Pet"];
+	for (auto& item : img)
+	{
+		int nItemID = atoi(item.Name().c_str());
+		CashItem *pItem = AllocObj(CashItem);
+		pItem->bIsPet = true;
+		m_mCashItem.insert({ nItemID, pItem });
+	}
+	
 }
 
 void ItemInfo::IterateCashItem()
 {
+	auto& img = stWzResMan->GetWz(Wz::Item)["Cash"];
+	for (auto& subImg : img)
+	{
+		for (auto& item : subImg)
+		{
+			int nItemID = atoi(item.Name().c_str());
+			CashItem *pItem = AllocObj(CashItem);
+			m_mCashItem.insert({ nItemID, pItem });
+		}
+	}
 }
 
 void ItemInfo::RegisterSpecificItems()
@@ -178,12 +243,15 @@ void ItemInfo::RegisterSetHalloweenItem()
 {
 }
 
-void ItemInfo::RegisterEquipItemInfo(ItemInfo::EquipItem * pEqpItem, int nItemID, void * pProp)
+void ItemInfo::RegisterEquipItemInfo(EquipItem * pEqpItem, int nItemID, void * pProp)
 {
 	auto& infoImg = (*((WZ::Node*)pProp))["info"];
 
 	LoadIncrementStat(pEqpItem->incStat, (void*)&infoImg);
 	LoadAbilityStat(pEqpItem->abilityStat, (void*)&infoImg);
+
+	if (pEqpItem->abilityStat.bCash)
+		m_mCashItem.insert({ nItemID, AllocObj(CashItem) });
 
 	pEqpItem->nItemID = nItemID;
 	pEqpItem->nrSTR = infoImg["reqSTR"];
@@ -193,6 +261,7 @@ void ItemInfo::RegisterEquipItemInfo(ItemInfo::EquipItem * pEqpItem, int nItemID
 	pEqpItem->nrPOP = infoImg["reqPOP"];
 	pEqpItem->nrJob = infoImg["reqJob"];
 	pEqpItem->nrLevel = infoImg["reqLevel"];
+	pEqpItem->nRUC = infoImg["tuc"];
 	//pEqpItem->nrMobLevel = infoImg["reqMobLevel"];
 	pEqpItem->nSellPrice = infoImg["price"];
 	pEqpItem->nKnockBack = infoImg["knockback"];
@@ -200,6 +269,7 @@ void ItemInfo::RegisterEquipItemInfo(ItemInfo::EquipItem * pEqpItem, int nItemID
 	pEqpItem->nIncRMAI = infoImg["incRMAI"];
 	pEqpItem->nIncRMAL = infoImg["incRMAL"];
 	pEqpItem->nElemDefault = infoImg["elemDefault"];
+	pEqpItem->nCuttable = (int)infoImg["tradeAvailable"];
 	pEqpItem->dwPetAbilityFlag = 0;
 	if (nItemID / 10000 == 181)
 	{
@@ -223,7 +293,7 @@ void ItemInfo::RegisterEquipItemInfo(ItemInfo::EquipItem * pEqpItem, int nItemID
 void ItemInfo::RegisterUpgradeItem(int nItemID, void * pProp)
 {
 	auto& infoImg = (*((WZ::Node*)pProp))["info"];
-	ItemInfo::UpgradeItem *pNewUpgradeItem = new ItemInfo::UpgradeItem;
+	UpgradeItem *pNewUpgradeItem = AllocObj(UpgradeItem);
 
 	pNewUpgradeItem->nItemID = nItemID;
 	LoadIncrementStat(pNewUpgradeItem->incStat, (void*)&infoImg);
@@ -234,30 +304,30 @@ void ItemInfo::RegisterUpgradeItem(int nItemID, void * pProp)
 
 void ItemInfo::RegisterPortalScrollItem(int nItemID, void * pProp)
 {
-	ItemInfo::PortalScrollItem *pNewPortalScrollItem = new ItemInfo::PortalScrollItem;
+	PortalScrollItem *pNewPortalScrollItem = AllocObj(PortalScrollItem);
 	pNewPortalScrollItem->nItemID = nItemID;
 	auto& specImg = (*((WZ::Node*)pProp))["spec"];
 	for (auto& effect : specImg)
-		pNewPortalScrollItem->spec.push_back({ effect.Name(), (int)effect });
+		pNewPortalScrollItem->spec.insert({ effect.Name(), (int)effect });
 	m_mPortalScrollItem[nItemID] = pNewPortalScrollItem;
 }
 
 void ItemInfo::RegisterMobSummonItem(int nItemID, void * pProp)
 {
 	auto& infoImg = (*((WZ::Node*)pProp))["info"];
-	ItemInfo::MobSummonItem *pNewMobSummonItem = new ItemInfo::MobSummonItem;
+	MobSummonItem *pNewMobSummonItem = AllocObj(MobSummonItem);
 	pNewMobSummonItem->nItemID = nItemID;
 	pNewMobSummonItem->nType = infoImg["type"];
 	auto& mobImg = (*((WZ::Node*)pProp))["mob"];
 	for (auto& mob : mobImg)
-		pNewMobSummonItem->lMob.push_back({ (int)(mob["id"]), (int)(mob["prob"]) });
+		pNewMobSummonItem->lMob.insert({ (int)(mob["id"]), (int)(mob["prob"]) });
 	m_mMobSummonItem[nItemID] = pNewMobSummonItem;
 }
 
 void ItemInfo::RegisterPetFoodItem(int nItemID, void * pProp)
 {
 	auto& specImg = (*((WZ::Node*)pProp))["spec"];
-	ItemInfo::PetFoodItem *pNewFoodItem = new ItemInfo::PetFoodItem;
+	PetFoodItem *pNewFoodItem = AllocObj(PetFoodItem);
 	pNewFoodItem->nItemID = nItemID;
 	pNewFoodItem->niRepleteness = specImg["inc"];
 	for (auto& petID : specImg)
@@ -269,7 +339,7 @@ void ItemInfo::RegisterPetFoodItem(int nItemID, void * pProp)
 void ItemInfo::RegisterTamingMobFoodItem(int nItemID, void * pProp)
 {
 	auto& specImg = (*((WZ::Node*)pProp))["spec"];
-	ItemInfo::TamingMobFoodItem *pNewTamingMobFoodItem = new ItemInfo::TamingMobFoodItem;
+	TamingMobFoodItem *pNewTamingMobFoodItem = AllocObj(TamingMobFoodItem);
 	pNewTamingMobFoodItem->nItemID = nItemID;
 	pNewTamingMobFoodItem->niFatigue = specImg["incFatigue"];
 	m_mTamingMobFoodItem[nItemID] = pNewTamingMobFoodItem;
@@ -278,7 +348,7 @@ void ItemInfo::RegisterTamingMobFoodItem(int nItemID, void * pProp)
 void ItemInfo::RegisterBridleItem(int nItemID, void * pProp)
 {
 	auto& infoImg = (*((WZ::Node*)pProp))["info"];
-	ItemInfo::BridleItem *pNewBridleItem = new ItemInfo::BridleItem;
+	BridleItem *pNewBridleItem = AllocObj(BridleItem);
 	pNewBridleItem->nItemID = nItemID;
 	pNewBridleItem->dwTargetMobID = infoImg["mob"];
 	pNewBridleItem->nCreateItemID = infoImg["create"];
@@ -293,7 +363,7 @@ void ItemInfo::RegisterBridleItem(int nItemID, void * pProp)
 void ItemInfo::RegisterPortableChairItem(int nItemID, void * pProp)
 {
 	auto& infoImg = (*((WZ::Node*)pProp))["info"];
-	ItemInfo::PortableChairItem *pNewPortableChairItem = new ItemInfo::PortableChairItem;
+	PortableChairItem *pNewPortableChairItem = AllocObj(PortableChairItem);
 	pNewPortableChairItem->nItemID = nItemID;
 	pNewPortableChairItem->nReqLevel = infoImg["reqLevel"];
 	pNewPortableChairItem->nPortableChairRecoveryRateMP = infoImg["recoveryMP"];
@@ -304,7 +374,7 @@ void ItemInfo::RegisterPortableChairItem(int nItemID, void * pProp)
 void ItemInfo::RegisterSkillLearnItem(int nItemID, void * pProp)
 {
 	auto& infoImg = (*((WZ::Node*)pProp))["info"];
-	ItemInfo::SkillLearnItem *pNewSkillLearnItem = new ItemInfo::SkillLearnItem;
+	SkillLearnItem *pNewSkillLearnItem = AllocObj(SkillLearnItem);
 	pNewSkillLearnItem->nItemID = nItemID;
 	pNewSkillLearnItem->nMasterLevel = infoImg["masterLevel"];
 	pNewSkillLearnItem->nSuccessRate = infoImg["success"];
@@ -318,78 +388,102 @@ void ItemInfo::RegisterSkillLearnItem(int nItemID, void * pProp)
 
 void ItemInfo::RegisterStateChangeItem(int nItemID, void * pProp)
 {
-	ItemInfo::StateChangeItem *pNewStateChangeItem = new ItemInfo::StateChangeItem;
+	StateChangeItem *pNewStateChangeItem = AllocObj(StateChangeItem);
 	pNewStateChangeItem->nItemID = nItemID;
 	auto& specImg = (*((WZ::Node*)pProp))["spec"];
 	for(auto& effect : specImg)
-		pNewStateChangeItem->spec.push_back({ effect.Name(), (int)effect });
+		pNewStateChangeItem->spec.insert({ effect.Name(), (int)effect });
 	m_mStateChangeItem[nItemID] = pNewStateChangeItem;
 }
 
-ItemInfo::EquipItem * ItemInfo::GetEquipItem(int nItemID)
+EquipItem * ItemInfo::GetEquipItem(int nItemID)
 {
 	auto findIter = m_mEquipItem.find(nItemID);
 	return (findIter != m_mEquipItem.end() ? findIter->second : nullptr);
 }
 
-ItemInfo::StateChangeItem * ItemInfo::GetStateChangeItem(int nItemID)
+StateChangeItem * ItemInfo::GetStateChangeItem(int nItemID)
 {
 	auto findIter = m_mStateChangeItem.find(nItemID);
 	return (findIter != m_mStateChangeItem.end() ? findIter->second : nullptr);
 }
 
-ItemInfo::BundleItem * ItemInfo::GetBundleItem(int nItemID)
+CashItem * ItemInfo::GetCashItem(int nItemID)
+{
+	auto findIter = m_mCashItem.find(nItemID);
+	return (findIter != m_mCashItem.end() ? findIter->second : nullptr);
+}
+
+BundleItem * ItemInfo::GetBundleItem(int nItemID)
 {
 	auto findIter = m_mBundleItem.find(nItemID);
 	return (findIter != m_mBundleItem.end() ? findIter->second : nullptr);
 }
 
-ItemInfo::UpgradeItem * ItemInfo::GetUpgradeItem(int nItemID)
+UpgradeItem * ItemInfo::GetUpgradeItem(int nItemID)
 {
 	auto findIter = m_mUpgradeItem.find(nItemID);
 	return (findIter != m_mUpgradeItem.end() ? findIter->second : nullptr);
 }
 
-ItemInfo::PortalScrollItem * ItemInfo::GetPortalScrollItem(int nItemID)
+PortalScrollItem * ItemInfo::GetPortalScrollItem(int nItemID)
 {
 	auto findIter = m_mPortalScrollItem.find(nItemID);
 	return (findIter != m_mPortalScrollItem.end() ? findIter->second : nullptr);
 }
 
-ItemInfo::MobSummonItem * ItemInfo::GetMobSummonItem(int nItemID)
+MobSummonItem * ItemInfo::GetMobSummonItem(int nItemID)
 {
 	auto findIter = m_mMobSummonItem.find(nItemID);
 	return (findIter != m_mMobSummonItem.end() ? findIter->second : nullptr);
 }
 
-ItemInfo::PetFoodItem * ItemInfo::GetPetFoodItem(int nItemID)
+PetFoodItem * ItemInfo::GetPetFoodItem(int nItemID)
 {
 	auto findIter = m_mPetFoodItem.find(nItemID);
 	return (findIter != m_mPetFoodItem.end() ? findIter->second : nullptr);
 }
 
-ItemInfo::TamingMobFoodItem * ItemInfo::GetTamingMobFoodItem(int nItemID)
+TamingMobFoodItem * ItemInfo::GetTamingMobFoodItem(int nItemID)
 {
 	auto findIter = m_mTamingMobFoodItem.find(nItemID);
 	return (findIter != m_mTamingMobFoodItem.end() ? findIter->second : nullptr);
 }
 
-ItemInfo::BridleItem * ItemInfo::GetBridleItem(int nItemID)
+BridleItem * ItemInfo::GetBridleItem(int nItemID)
 {
 	auto findIter = m_mBridleItem.find(nItemID);
 	return (findIter != m_mBridleItem.end() ? findIter->second : nullptr);
 }
 
-ItemInfo::SkillLearnItem * ItemInfo::GetSkillLearnItem(int nItemID)
+SkillLearnItem * ItemInfo::GetSkillLearnItem(int nItemID)
 {
 	auto findIter = m_mSkillLearnItem.find(nItemID);
 	return (findIter != m_mSkillLearnItem.end() ? findIter->second : nullptr);
 }
 
-ItemInfo::PortableChairItem * ItemInfo::GetPortableChairItem(int nItemID)
+PortableChairItem * ItemInfo::GetPortableChairItem(int nItemID)
 {
 	auto findIter = m_mPortableChairItem.find(nItemID);
 	return (findIter != m_mPortableChairItem.end() ? findIter->second : nullptr);
+}
+
+int ItemInfo::GetItemSlotType(int nItemID)
+{
+	return nItemID / 1000000;
+}
+
+bool ItemInfo::IsTreatSingly(int nItemID, long long int liExpireDate)
+{
+	int nItemHeader = GetItemSlotType(nItemID);
+	return ((nItemHeader != 2 && nItemHeader != 3 && nItemHeader != 4)
+		|| IsRechargable(nItemID)
+		/*|| liExpireDate != 0*/);
+}
+
+bool ItemInfo::IsRechargable(int nItemID)
+{
+	return nItemID / 10000 == 207 || nItemID / 10000 == 233;
 }
 
 bool ItemInfo::ConsumeOnPickup(int nItemID)
@@ -411,13 +505,13 @@ bool ItemInfo::ExpireOnLogout(int nItemID)
 		{
 			auto pItem = GetEquipItem(nItemID);
 			if (pItem != nullptr)
-				return pItem->abilityStat.bExpireOnLogout;
+				return (pItem->abilityStat.nAttribute & ItemAttribute::eExpireOnLogout) != 0;
 		}
 		else
 		{
 			auto pItem = GetBundleItem(nItemID);
 			if (pItem != nullptr)
-				return pItem->abilityStat.bExpireOnLogout;
+				return (pItem->abilityStat.nAttribute & ItemAttribute::eExpireOnLogout) != 0;
 		}
 	return false;
 }
@@ -452,8 +546,9 @@ long long int ItemInfo::GetItemDateExpire(const std::string & sDate)
 
 const std::string & ItemInfo::GetItemName(int nItemID)
 {
+	static std::string strEmpty = "";
 	auto findResult = m_mItemString.find(nItemID);
-	return (findResult == m_mItemString.end() ? "" : findResult->second);
+	return (findResult == m_mItemString.end() ? strEmpty : findResult->second);
 }
 
 bool ItemInfo::IsAbleToEquip(int nGender, int nLevel, int nJob, int nSTR, int nDEX, int nINT, int nLUK, int nPOP, GW_ItemSlotBase * pPetItem, int nItemID)
@@ -463,77 +558,139 @@ bool ItemInfo::IsAbleToEquip(int nGender, int nLevel, int nJob, int nSTR, int nD
 
 bool ItemInfo::IsNotSaleItem(int nItemID)
 {
-	if (nItemID / 1000000 != 5)
-		if (nItemID / 1000000 == 1)
+	int nTI = GetItemSlotType(nItemID);
+	if (nTI != 5)
+		if (nTI == 1)
 		{
 			auto pItem = GetEquipItem(nItemID);
 			if (pItem != nullptr)
-				return pItem->abilityStat.bNotSale;
+				return (pItem->abilityStat.nAttribute & ItemAttribute::eNotSale) != 0;
 		}
 		else
 		{
 			auto pItem = GetBundleItem(nItemID);
 			if (pItem != nullptr)
-				return pItem->abilityStat.bNotSale;
+				return (pItem->abilityStat.nAttribute & ItemAttribute::eNotSale) != 0;
 		}
 	return false;
 }
 
 bool ItemInfo::IsOnlyItem(int nItemID)
 {
-	if (nItemID / 1000000 != 5)
-		if (nItemID / 1000000 == 1)
+	int nTI = GetItemSlotType(nItemID);
+	if (nTI != 5)
+		if (nTI == 1)
 		{
 			auto pItem = GetEquipItem(nItemID);
 			if (pItem != nullptr)
-				return pItem->abilityStat.bOnly;
+				return (pItem->abilityStat.nAttribute & ItemAttribute::eOnly) != 0;
 		}
 		else
 		{
 			auto pItem = GetBundleItem(nItemID);
 			if (pItem != nullptr)
-				return pItem->abilityStat.bOnly;
+				return (pItem->abilityStat.nAttribute & ItemAttribute::eOnly) != 0;
 		}
 	return false;
 }
 
 bool ItemInfo::IsTradeBlockItem(int nItemID)
 {
-	if (nItemID / 1000000 != 5)
-		if (nItemID / 1000000 == 1)
+	int nTI = GetItemSlotType(nItemID);
+	if (nTI != 5)
+		if (nTI == 1)
 		{
 			auto pItem = GetEquipItem(nItemID);
 			if (pItem != nullptr)
-				return pItem->abilityStat.bTradeBlock;
+				return (pItem->abilityStat.nAttribute & ItemAttribute::eTradeBlock) != 0;
 		}
 		else
 		{
 			auto pItem = GetBundleItem(nItemID);
 			if (pItem != nullptr)
-				return pItem->abilityStat.bTradeBlock;
+				return (pItem->abilityStat.nAttribute & ItemAttribute::eTradeBlock) != 0;
 		}
 	return false;
 }
 
 bool ItemInfo::IsQuestItem(int nItemID)
 {
-	if (nItemID / 1000000 != 5)
-		if (nItemID / 1000000 == 1)
+	int nTI = GetItemSlotType(nItemID);
+	if (nTI != 5)
+		if (nTI == 1)
 		{
 			auto pItem = GetEquipItem(nItemID);
 			if (pItem != nullptr)
-				return pItem->abilityStat.bQuest;
+				return (pItem->abilityStat.nAttribute & ItemAttribute::eQuest) != 0;
 		}
 		else
 		{
 			auto pItem = GetBundleItem(nItemID);
 			if (pItem != nullptr)
-				return pItem->abilityStat.bQuest;
+				return (pItem->abilityStat.nAttribute & ItemAttribute::eQuest) != 0;
 		}
 	return false;
 }
 
-void ItemInfo::LoadIncrementStat(ItemInfo::BasicIncrementStat & refStat, void * pProp)
+bool ItemInfo::IsWeapon(int nItemID)
+{
+	return (nItemID >= 1210000 && nItemID < 1600000)
+		|| nItemID / 10000 == 135;
+}
+
+bool ItemInfo::IsCoat(int nItemID)
+{
+	return nItemID / 10000 == 104;
+}
+
+bool ItemInfo::IsCape(int nItemID)
+{
+	return nItemID / 10000 == 100;
+}
+
+bool ItemInfo::IsPants(int nItemID)
+{
+	return nItemID / 10000 == 106;
+}
+
+bool ItemInfo::IsHair(int nItemID)
+{
+	return nItemID >= 30000 && nItemID <= 49999;
+}
+
+bool ItemInfo::IsFace(int nItemID)
+{
+	return nItemID >= 20000 && nItemID <= 29999;
+}
+
+bool ItemInfo::IsShield(int nItemID)
+{
+	return nItemID / 10000 == 109;
+}
+
+bool ItemInfo::IsShoes(int nItemID)
+{
+	return nItemID / 10000 == 107;
+}
+
+bool ItemInfo::IsLongcoat(int nItemID)
+{
+	return nItemID / 10000 == 105;
+}
+
+bool ItemInfo::IsCap(int nItemID)
+{
+	return nItemID / 10000 == 110;
+}
+
+bool ItemInfo::IsPet(int nItemID)
+{
+	int nTI = GetItemSlotType(nItemID);
+	int nPrefix = nItemID / 1000;
+	return nTI == GW_ItemSlotBase::CASH && (nPrefix % 10 == 0);
+}
+
+void ItemInfo::LoadIncrementStat(BasicIncrementStat & refStat, void * pProp)
 {
 	auto& infoImg = (*((WZ::Node*)pProp));
 	refStat.niSTR = infoImg["incSTR"];
@@ -554,27 +711,45 @@ void ItemInfo::LoadIncrementStat(ItemInfo::BasicIncrementStat & refStat, void * 
 	refStat.niSwim = infoImg["incSwim"];
 }
 
-void ItemInfo::LoadAbilityStat(ItemInfo::BasicAbilityStat & refStat, void * pProp)
+void ItemInfo::LoadAbilityStat(BasicAbilityStat & refStat, void * pProp)
 {
 	auto& infoImg = (*((WZ::Node*)pProp));	
+	refStat.nAttribute = (int)infoImg["bagType"];
+	if (((int)infoImg["notSale"]) == 1)
+		refStat.nAttribute |= ItemAttribute::eNotSale;
+	if (((int)infoImg["expireOnLogout"]) == 1)
+		refStat.nAttribute |= ItemAttribute::eExpireOnLogout;
+	if (((int)infoImg["pickUpBlock"] == 1))
+		refStat.nAttribute |= ItemAttribute::ePickUpBlock;
+	if (((int)infoImg["equipTradeBlock"] == 1))
+		refStat.nAttribute |= ItemAttribute::eTradeBlockAfterEquip;
+	if (((int)infoImg["only"]) == 1)
+		refStat.nAttribute |= ItemAttribute::eOnly;
+	if (((int)infoImg["accountSharable"] == 1))
+		refStat.nAttribute |= ItemAttribute::eAccountSharable;
+	if (((int)infoImg["quest"]) == 1)
+		refStat.nAttribute |= ItemAttribute::eQuest;
+	if (((int)infoImg["tradeBlock"]) == 1)
+		refStat.nAttribute |= ItemAttribute::eTradeBlock;
+	if (((int)infoImg["accountShareTag"] == 1))
+		refStat.nAttribute |= ItemAttribute::eAccountShareTag;
+	if (((int)infoImg["mobHP"] == 1) && (int)infoImg["mobHP"] < 100)
+		refStat.nAttribute |= ItemAttribute::eMobHP;
+
+	refStat.bCash = ((int)infoImg["cash"]) == 1;
 	refStat.bTimeLimited = ((int)infoImg["timeLimited"]) == 1;
-	refStat.bQuest = ((int)infoImg["quest"]) == 1;
-	refStat.bOnly = ((int)infoImg["only"]) == 1;
-	refStat.bNotSale = ((int)infoImg["notSale"]) == 1;
-	refStat.bTradeBlock = ((int)infoImg["tradeBlock"]) == 1;
-	refStat.bExpireOnLogout = ((int)infoImg["expireOnLogout"]) == 1;
 }
 
 GW_ItemSlotBase * ItemInfo::GetItemSlot(int nItemID, ItemVariationOption enOption)
 {
-	int nType = nItemID / 1000000;
+	int nType = GetItemSlotType(nItemID);
 	GW_ItemSlotBase *ret = nullptr;
 	if (nType == 1)
 	{
 		auto pItem = GetEquipItem(nItemID);
 		if (pItem == nullptr)
 			return nullptr;
-		GW_ItemSlotEquip* pEquip = new GW_ItemSlotEquip;
+		GW_ItemSlotEquip* pEquip = AllocObj(GW_ItemSlotEquip);
 		int nValue = 0;
 		if ((nValue = pItem->incStat.niSTR))
 			pEquip->nSTR = GetVariation(nValue, enOption);
@@ -609,21 +784,39 @@ GW_ItemSlotBase * ItemInfo::GetItemSlot(int nItemID, ItemVariationOption enOptio
 			pEquip->nSpeed = GetVariation(nValue, enOption);
 		if ((nValue = pItem->incStat.niJump))
 			pEquip->nJump = GetVariation(nValue, enOption);
+		pEquip->nRUC = pItem->nRUC;
+		pEquip->nCuttable = (pItem->nCuttable == 0 ? 0xFF : pItem->nCuttable);
+
 		ret = pEquip;
+		ret->nAttribute = pItem->abilityStat.nAttribute;
+		ret->bIsCash = pItem->abilityStat.bCash;
 	}
-	else if (nType > 1 && nType <= 4)
+	else if (nType > 1 && nType <= 5)
 	{
 		auto pItem = GetBundleItem(nItemID);
 		if (pItem == nullptr)
-			return nullptr;
-
-		ret = new GW_ItemSlotBundle;
-		((GW_ItemSlotBundle*)ret)->nNumber = 1;
+		{
+			auto pCash = GetCashItem(nItemID);
+			if (pCash && pCash->bIsPet)
+			{
+				ret = AllocObj(GW_ItemSlotPet);
+				((GW_ItemSlotPet*)ret)->nLevel = 1;
+				((GW_ItemSlotPet*)ret)->strPetName = GetItemName(nItemID);
+				ret->bIsCash = ret->bIsPet = true;
+			}
+		}
+		else
+		{
+			ret = AllocObj(GW_ItemSlotBundle);
+			((GW_ItemSlotBundle*)ret)->nNumber = 1;
+			ret->nAttribute = pItem->abilityStat.nAttribute;
+			ret->bIsCash = pItem->abilityStat.bCash;
+		}
 	}
 	if (ret)
 	{
 		ret->nItemID = nItemID;
-		ret->nType = (GW_ItemSlotBundle::GW_ItemSlotType)(GW_ItemSlotBundle::EQUIP + (nType - 1));
+		ret->nType = (GW_ItemSlotBundle::GW_ItemSlotType)((nType));
 	}
 	return ret;
 }
@@ -726,3 +919,4 @@ int ItemInfo::GetVariation(int v, ItemVariationOption enOption)
 	}
 	return result;
 }
+

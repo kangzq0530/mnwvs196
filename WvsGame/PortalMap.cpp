@@ -2,6 +2,7 @@
 #include "Portal.h"
 #include "TownPortalPool.h"
 #include "Field.h"
+#include "..\WvsLib\Wz\WzResMan.hpp"
 #include <algorithm>
 
 PortalMap::PortalMap()
@@ -12,17 +13,18 @@ PortalMap::PortalMap()
 PortalMap::~PortalMap()
 {
 	for (auto& p : m_apPortal)
-		delete p;
+		FreeObj( p );
 }
 
 /*
 載入該地圖中的所有portals
 */
-void PortalMap::RestorePortal(Field * pField, WZ::Node & pPropPortal)
+void PortalMap::RestorePortal(Field * pField, void* pImg)
 {
+	WZ::Node & pPropPortal = *((WZ::Node*)pImg);
 	for (auto& portalNode : pPropPortal)
 	{
-		Portal* newPortal = new Portal(
+		Portal* newPortal = AllocObjCtor(Portal)(
 			atoi(portalNode.Name().c_str()),
 			(int)portalNode["pt"],
 			(int)portalNode["tm"],
@@ -37,10 +39,10 @@ void PortalMap::RestorePortal(Field * pField, WZ::Node & pPropPortal)
 			newPortal->SetPortalScriptName(portalNode["portal"]);
 		else if (nType == 6)
 		{
-			pField->GetTownPortalPool()->AddTownPortalPos({
-				newPortal->GetX(),
-				newPortal->GetY()
-			});
+			FieldPoint pt;
+			pt.x = newPortal->GetX();
+			pt.y = newPortal->GetY();
+			pField->GetTownPortalPool()->AddTownPortalPos(pt);
 		}
 
 		if (nType)

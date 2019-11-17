@@ -1,5 +1,6 @@
 #include "USkill.h"
-#include "..\Common\Net\InPacket.h"
+#include "..\WvsLib\Net\InPacket.h"
+#include "..\WvsLib\Net\OutPacket.h"
 #include "..\Database\GA_Character.hpp"
 #include "..\Database\GW_CharacterStat.h"
 #include "..\Database\GW_SkillRecord.h"
@@ -10,10 +11,31 @@
 #include "SkillEntry.h"
 #include "SkillLevelData.h"
 #include "SkillInfo.h"
+#include "KaiserSkills.h"
 #include "QWUSkillRecord.h"
 
-#include "WvsGameConstants.hpp"
-#include "Utility\DateTime\GameDateTime.h"
+#include "..\WvsLib\Common\WvsGameConstants.hpp"
+#include "..\WvsLib\DateTime\GameDateTime.h"
+
+#include "..\WvsLib\Logger\WvsLogger.h"
+
+
+/*
+This MACRO defines some variables that are required by REGISTER_TS
+Please define this in the beginning section of every DoActiveSkill_XXX
+*/
+#define REGISTER_USE_SKILL_SECTION \
+nSLV = (nSLV > pSkill->GetMaxLevel() ? pSkill->GetMaxLevel() : nSLV);\
+auto pSkillLVLData = pSkill->GetLevelData(nSLV);\
+auto tsFlag = TemporaryStat::TS_Flag::GetDefault();\
+std::pair<long long int, std::vector<int*>>* pRef = nullptr;\
+std::pair<long long int, std::vector<int>>* pRefIndie = nullptr;\
+auto pSS = pUser->GetSecondaryStat();\
+int nSkillID = pSkill->GetSkillID();\
+int tDelay = 0;\
+int nDuration = pSkillLVLData->m_nTime * 1000;\
+	if (nDuration == 0)\
+		nDuration = INT_MAX;
 
 
 /*
@@ -30,17 +52,77 @@ pRef = &pSS->m_mSetByTS[TemporaryStat::TS_##name]; pRef->second.clear();\
 pSS->n##name = bResetBySkill ? 0 : value;\
 pSS->r##name = bResetBySkill ? 0 : nSkillID;\
 pSS->t##name = bResetBySkill ? 0 : nDuration;\
+pSS->nLv##name = bResetBySkill ? 0 : nSLV;\
 if(!bResetBySkill)\
 {\
-	pRef->first = GameDateTime::GetTime();\
+	pRef->first = bForcedSetTime ? nForcedSetTime : GameDateTime::GetTime();\
 	pRef->second.push_back(&pSS->n##name);\
 	pRef->second.push_back(&pSS->r##name);\
 	pRef->second.push_back(&pSS->t##name);\
+	pRef->second.push_back(&pSS->nLv##name);\
 }\
+
+#define REGISTER_INDIE_TS(name, value)\
+tsFlag |= GET_TS_FLAG(##name);\
+pRefIndie = &pSS->m_mSetByIndieTS[TemporaryStat::TS_##name][nSkillID]; pRefIndie->second.clear();\
+pSS->n##name += bResetBySkill ? -value : value;\
+if(!bResetBySkill)\
+{\
+	pRefIndie->first = bForcedSetTime ? nForcedSetTime : GameDateTime::GetTime();\
+	pRefIndie->second.push_back(value);\
+	pRefIndie->second.push_back(nSkillID);\
+	pRefIndie->second.push_back(nDuration);\
+	pRefIndie->second.push_back(nSLV);\
+}\
+
+void USkill::ValidateSecondaryStat(User * pUser)
+{
+	auto pSS = pUser->GetSecondaryStat();
+	auto iter = pSS->m_mSetByTS.begin(),
+		 iterEnd = pSS->m_mSetByTS.end();
+
+	while (iter != iterEnd)
+		if (iter->second.second.size() == 0)
+		{
+			pSS->m_mSetByTS.erase(iter);
+			iter = pSS->m_mSetByTS.begin();
+		}
+		else
+			++iter;
+
+	//Indie TS
+	auto indieMapIter = pSS->m_mSetByIndieTS.begin(),
+		 indieMapEnd = pSS->m_mSetByIndieTS.end();
+
+	while (indieMapIter != indieMapEnd)
+	{
+		auto indieTS = indieMapIter->second.begin();
+		while (indieTS != indieMapIter->second.end())
+		{
+			//技能對應的Indie TS已經被取消，清除
+			if(indieTS->second.second.size() == 0)
+			{
+				indieMapIter->second.erase(indieTS);
+				indieTS = indieMapIter->second.begin();
+			}
+			else
+				++indieTS;
+		}
+
+		//整個Indie TS為空，清除
+		if (indieMapIter->second.size() == 0)
+		{
+			pSS->m_mSetByIndieTS.erase(indieMapIter);
+			indieMapIter = pSS->m_mSetByIndieTS.begin();
+		}
+		else
+			++indieMapIter;
+	}
+}
 
 void USkill::OnSkillUseRequest(User * pUser, InPacket * iPacket)
 {
-	std::lock_guard<std::mutex> userGuard(pUser->GetLock());
+	std::lock_guard<std::recursive_mutex> userGuard(pUser->GetLock());
 	int tRequestTime = iPacket->Decode4();
 	int nSkillID = iPacket->Decode4();
 	int nSpiritJavelinItemID = 0;
@@ -58,7 +140,24 @@ void USkill::OnSkillUseRequest(User * pUser, InPacket * iPacket)
 		SendFailPacket(pUser);
 		return;
 	}
-	DoActiveSkill_SelfStatChange(pUser, pSkillEntry, nSLV, iPacket, 0, false);
+	USkill::OnSkillUseRequest(
+		pUser,
+		iPacket,
+		pSkillEntry,
+		nSLV,
+		false,
+		false,
+		0
+	);
+}
+
+void USkill::OnSkillUseRequest(User * pUser, InPacket *iPacket, const SkillEntry * pEntry, int nSLV, bool bResetBySkill, bool bForceSetTime, int nForceSetTime)
+{
+	int nSkillID = pEntry->GetSkillID();
+	if (SkillInfo::IsSummonSkill(nSkillID))
+		DoActiveSkill_Summon(pUser, pEntry, nSLV, iPacket, bResetBySkill, bForceSetTime, nForceSetTime);
+	else
+		DoActiveSkill_SelfStatChange(pUser, pEntry, nSLV, iPacket, 0, bResetBySkill, bForceSetTime, nForceSetTime);
 }
 
 void USkill::OnSkillUpRequest(User * pUser, InPacket * iPacket)
@@ -75,7 +174,7 @@ void USkill::OnSkillUpRequest(User * pUser, InPacket * iPacket)
 
 void USkill::OnSkillUpRequest(User * pUser, int nSkillID, int nAmount, bool bDecSP, bool bCheckMasterLevel)
 {
-	std::lock_guard<std::mutex> userGuard(pUser->GetLock());
+	std::lock_guard<std::recursive_mutex> userGuard(pUser->GetLock());
 	std::vector<GW_SkillRecord*> aChange;
 	if (QWUSkillRecord::SkillUp(
 		pUser,
@@ -97,7 +196,7 @@ void USkill::OnSkillPrepareRequest(User * pUser, InPacket * iPacket)
 
 void USkill::OnSkillCancelRequest(User * pUser, InPacket * iPacket)
 {
-	std::lock_guard<std::mutex> userGuard(pUser->GetLock());
+	std::lock_guard<std::recursive_mutex> userGuard(pUser->GetLock());
 	int nSkillID = iPacket->Decode4();
 	SkillEntry* pSkill = nullptr;
 	int nSLV = SkillInfo::GetInstance()->GetSkillLevel(
@@ -108,34 +207,35 @@ void USkill::OnSkillCancelRequest(User * pUser, InPacket * iPacket)
 		0,
 		0,
 		0);
-	if(pSkill)
-		DoActiveSkill_SelfStatChange(pUser, pSkill, nSLV, iPacket, 0, true);
+	if (pSkill)
+	{
+		USkill::OnSkillUseRequest(
+			pUser,
+			iPacket,
+			pSkill,
+			nSLV,
+			true,
+			false,
+			0
+		);
+	}
 }
 
 void USkill::SendFailPacket(User* pUser)
 {
 }
 
-void USkill::DoActiveSkill_SelfStatChange(User* pUser, const SkillEntry * pSkill, int nSLV, InPacket * iPacket, int nOptionValue, bool bResetBySkill)
+void USkill::DoActiveSkill_SelfStatChange(User* pUser, const SkillEntry * pSkill, int nSLV, InPacket * iPacket, int nOptionValue, bool bResetBySkill, bool bForcedSetTime, int nForcedSetTime)
 {
 	nSLV = (nSLV > pSkill->GetMaxLevel() ? pSkill->GetMaxLevel() : nSLV);
-	auto pSkillLVLData = pSkill->GetLevelData(nSLV);
-	int nSkillID = pSkill->GetSkillID();
-	int nDuration = pSkillLVLData->m_nTime * 1000;
-	if (nDuration == 0)
-		nDuration = 2147483647;
-	int tDelay = 0;
-	if(iPacket)
+	REGISTER_USE_SKILL_SECTION;
+	if (iPacket)
 		tDelay = iPacket->Decode2();
-	auto pSS = pUser->GetSecondaryStat();
 	if (!pSkillLVLData) 
 	{
-		printf("[USkill::DoActiveSkill_SelfStatChange]異常的技能資訊，技能ID = %d，技能等級 = %d\n", pSkill->GetSkillID(), nSLV);
+		WvsLogger::LogFormat(WvsLogger::LEVEL_ERROR, "[USkill::DoActiveSkill_SelfStatChange]異常的技能資訊，技能ID = %d，技能等級 = %d\n", pSkill->GetSkillID(), nSLV);
 		return;
 	}
-	auto tsFlag = TemporaryStat::TS_Flag::GetDefault();
-
-	std::pair<long long int, std::vector<int*>>* pRef = nullptr;
 	if (pSkillLVLData->m_nPad > 0)
 	{
 		REGISTER_TS(PAD, pSkillLVLData->m_nPad);
@@ -175,6 +275,15 @@ void USkill::DoActiveSkill_SelfStatChange(User* pUser, const SkillEntry * pSkill
 	auto iter = pSS->m_mSetByTS.begin();
 	switch (nSkillID)
 	{
+		case KaiserSkills::TempestBlades_6110:
+		case KaiserSkills::TempestBlades_6111_2:
+		case KaiserSkills::AdvancedTempestBlades_6112:
+		case KaiserSkills::AdvancedTempestBlades_6112_2:
+		{
+			pSS->sStopForceAtomInfo.CreateStopForceAtom(pUser, nSkillID);
+			REGISTER_TS(StopForceAtomInfo, nSLV);
+			break;
+		}
 		case 2111008:
 		{
 			REGISTER_TS(ElementalReset, pSkillLVLData->m_nX);
@@ -538,7 +647,8 @@ void USkill::DoActiveSkill_SelfStatChange(User* pUser, const SkillEntry * pSkill
 		case 24121008: // phantom
 		case 100001268: // Zero
 						// case 51121005: //Mihile's Maple Warrior
-			REGISTER_TS(BasicStatUp, pSkillLVLData->m_nX);
+			REGISTER_INDIE_TS(IndiePAD, pSkillLVLData->m_nX);
+			//REGISTER_TS(BasicStatUp, pSkillLVLData->m_nX);
 			break;
 		case 15111006: //spark
 			//REGISTER_TS(SPARK, pSkillLVLData->m_nX);
@@ -819,10 +929,6 @@ void USkill::DoActiveSkill_SelfStatChange(User* pUser, const SkillEntry * pSkill
 		case 32111006:
 			//REGISTER_TS(REAPER, 1);
 			break;
-		case 35121003:
-			
-			//REGISTER_TS(SUMMON, 1);
-			break;
 		case 35111001:
 		case 35111010:
 		case 35111009:
@@ -886,24 +992,6 @@ void USkill::DoActiveSkill_SelfStatChange(User* pUser, const SkillEntry * pSkill
 		case 1301013: // Evil Eye
 		case 1311013: // Evil Eye of Domination
 			REGISTER_TS(Beholder, nSLV);
-			break;
-		case 2321003: // bahamut
-		case 5211002: // Pirate bird summon
-		case 11001004:
-		case 12001004:
-		case 12111004: // Itrit
-		case 13001004:
-		case 14001005:
-		case 15001004:
-		case 35111011:
-		case 35121009:
-		case 35121011:
-		case 33101008: //summon - its raining mines
-		case 4111007: //dark flare
-		case 4211007: //dark flare
-		case 14111010: //dark flare
-		case 5321004:
-			//REGISTER_TS(SUMMON, 1);
 			break;
 		case 36121002:
 		case 36121013:
@@ -1003,7 +1091,7 @@ void USkill::DoActiveSkill_SelfStatChange(User* pUser, const SkillEntry * pSkill
 			break;
 
 		case 9101003: //customs for infinite dmg :D
-			REGISTER_TS(IndiePAD, INT_MAX);
+			REGISTER_INDIE_TS(IndiePAD, INT_MAX);
 			REGISTER_TS(IndieMAD, INT_MAX);
 			REGISTER_TS(IndieMaxDamageOver, 500000);
 		case 2301004:
@@ -1241,8 +1329,8 @@ void USkill::DoActiveSkill_SelfStatChange(User* pUser, const SkillEntry * pSkill
 		case 1321053:
 		case 1221053:
 		case 1121053: //Epic Adventure
-			REGISTER_TS(IndieMaxDamageOver, pSkillLVLData->m_nIndieMaxDamageOver);
-			REGISTER_TS(IndieDamR, pSkillLVLData->m_nIndieDamR);
+			REGISTER_INDIE_TS(IndieMaxDamageOver, pSkillLVLData->m_nIndieMaxDamageOver);
+			REGISTER_INDIE_TS(IndiePAD, pSkillLVLData->m_nIndieDamR);
 			break;
 		case 31221053:
 		case 31121053:
@@ -1283,7 +1371,7 @@ void USkill::DoActiveSkill_SelfStatChange(User* pUser, const SkillEntry * pSkill
 		case 61120008: // final form
 		case 61121053: // final trance
 			REGISTER_TS(Speed, -pSkillLVLData->m_nSpeed);
-			REGISTER_TS(Morph, -pSkillLVLData->m_nMorph);
+			REGISTER_TS(Morph, pSkillLVLData->m_nMorph);
 			REGISTER_TS(CriticalBuff, -pSkillLVLData->m_nCr);
 			REGISTER_TS(IndieDamR, pSkillLVLData->m_nIndieDamR);
 			REGISTER_TS(IndieBooster, pSkillLVLData->m_nIndieBooster);
@@ -1429,15 +1517,7 @@ void USkill::DoActiveSkill_SelfStatChange(User* pUser, const SkillEntry * pSkill
 	if (bResetBySkill)
 	{
 		pUser->SendTemporaryStatReset(tsFlag);
-		auto iter = pSS->m_mSetByTS.begin();
-		while (iter != pSS->m_mSetByTS.end())
-			if (iter->second.second.size() == 0)
-			{
-				pSS->m_mSetByTS.erase(iter);
-				iter = pSS->m_mSetByTS.begin();
-			}
-			else
-				++iter;
+		ValidateSecondaryStat(pUser);
 	}
 	else
 	{
@@ -1463,33 +1543,50 @@ void USkill::DoActiveSkill_MobStatChange(User* pUser, const SkillEntry * pSkill,
 {
 }
 
-void USkill::DoActiveSkill_Summon(User* pUser, const SkillEntry * pSkill, int nSLV, InPacket * iPacket)
+void USkill::DoActiveSkill_Summon(User* pUser, const SkillEntry * pSkill, int nSLV, InPacket * iPacket, bool bResetBySkill, bool bForcedSetTime, int nForcedSetTime)
 {
+	nSLV = (nSLV > pSkill->GetMaxLevel() ? pSkill->GetMaxLevel() : nSLV);
+	REGISTER_USE_SKILL_SECTION;
+	REGISTER_TS(ComboCounter, 1);
+	REGISTER_TS(EVAR, 10);
+	REGISTER_TS(FireBomb, 10);
+	pUser->RemoveSummoned(nSkillID, 0, nSkillID);
+	if (bResetBySkill)
+	{
+		pUser->SendTemporaryStatReset(tsFlag);
+		ValidateSecondaryStat(pUser);
+	}
+	else
+	{
+		pUser->CreateSummoned(pSkill, nSLV, { pUser->GetPosX(), pUser->GetPosY() }, false);
+		pUser->SendTemporaryStatReset(tsFlag);
+		pUser->SendTemporaryStatSet(tsFlag, 0);
+	}
+	pUser->SendCharacterStat(true, 0);
 }
 
 void USkill::DoActiveSkill_SmokeShell(User* pUser, const SkillEntry * pSkill, int nSLV, InPacket * iPacket)
 {
 }
 
-void USkill::ResetTemporaryByTime(User * pUser, int tCur)
+void USkill::ResetTemporaryByTime(User * pUser, const std::vector<int>& aResetReason)
 {
-	std::vector<int> resetReason;
-	auto pSS = pUser->GetSecondaryStat();
-	for (auto& setFlag : pSS->m_mSetByTS)
-	{
-		int nSkillID = *(setFlag.second.second[1]);
-		int tValue = *(setFlag.second.second[2]);
-		//printf("Skill ID %d, T Val = %d, Set Time = %d, Now = %d Diff = %d\n", nSkillID, tValue, setFlag.second.first, tCur, (tCur - setFlag.second.first));
-		//expired
-		if ((tCur - setFlag.second.first)  > *(setFlag.second.second[2]))
-			resetReason.push_back(*(setFlag.second.second[1]));
-	}
-	std::lock_guard<std::mutex> userGuard(pUser->GetLock());
-	for (auto nReason : resetReason)
+	std::lock_guard<std::recursive_mutex> userGuard(pUser->GetLock());
+	for (auto nReason : aResetReason)
 	{
 		SkillEntry* pSkill = nullptr;
 		auto nSLV = SkillInfo::GetInstance()->GetSkillLevel(pUser->GetCharacterData(), nReason, &pSkill, 0, 0, 0, 0);
 		if (pSkill)
-			DoActiveSkill_SelfStatChange(pUser, pSkill, nSLV, nullptr, 0, true);
+		{
+			USkill::OnSkillUseRequest(
+				pUser,
+				nullptr,
+				pSkill,
+				nSLV,
+				true,
+				false,
+				0
+			);
+		}
 	}
 }

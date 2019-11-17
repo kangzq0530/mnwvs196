@@ -9,14 +9,18 @@ struct TemporaryStat
 {
 	class TS_Flag {
 	private:
+		bool bEmpty = true;
 		static const int FLAG_COUNT = 17;
-		int m_aData[FLAG_COUNT], m_nFlagPos;
+		int m_aData[FLAG_COUNT], m_nFlagPos, m_nTSValue;
 
 	public:
+		TS_Flag();
 		TS_Flag(int dwFlagValue);
 		void Encode(OutPacket *oPacket);
 		TS_Flag& operator |= (const TS_Flag& rhs);
 		bool operator & (const TS_Flag& rhs);
+		bool IsEmpty() const;
+		bool IsIndieTS() const;
 
 		static TS_Flag GetDefault();
 	};
@@ -74,12 +78,12 @@ struct TemporaryStat
 	ADD_TS_FLAG(IndieQrPointTerm, 50);
 
 	ADD_TS_FLAG(INDIE_STAT_COUNT, 52);
-	ADD_TS_FLAG(PAD, 53);
-	ADD_TS_FLAG(PDD, 54);
-	ADD_TS_FLAG(MAD, 55);
-	ADD_TS_FLAG(MDD, 56);
-	ADD_TS_FLAG(ACC, 57);
-	ADD_TS_FLAG(EVA, 58);
+	ADD_TS_FLAG(PAD, 54);
+	ADD_TS_FLAG(PDD, 55);
+	ADD_TS_FLAG(MAD, 56);
+	ADD_TS_FLAG(MDD, 57);
+	ADD_TS_FLAG(ACC, 58);
+	ADD_TS_FLAG(EVA, 59);
 	ADD_TS_FLAG(Craft, 59);
 	ADD_TS_FLAG(Speed, 60);
 	ADD_TS_FLAG(Jump, 61);
@@ -95,6 +99,7 @@ struct TemporaryStat
 	ADD_TS_FLAG(Poison, 71);
 	ADD_TS_FLAG(Seal, 72);
 	ADD_TS_FLAG(Darkness, 73);
+	ADD_TS_FLAG(Summon, 74);
 	ADD_TS_FLAG(ComboCounter, 74);
 	ADD_TS_FLAG(WeaponCharge, 75);
 	ADD_TS_FLAG(HolySymbol, 76);

@@ -1,7 +1,10 @@
 #include "LifePool.h"
-#include "..\Common\Net\InPacket.h"
-#include "..\Common\Net\OutPacket.h"
-#include "..\Common\Net\PacketFlags\ClientPacketFlags.hpp"
+#include "..\WvsLib\Net\InPacket.h"
+#include "..\WvsLib\Net\OutPacket.h"
+#include "..\WvsLib\Net\PacketFlags\MobPacketFlags.hpp"
+#include "..\WvsLib\Net\PacketFlags\UserPacketFlags.hpp"
+
+#include "..\WvsLib\Logger\WvsLogger.h"
 
 #include "User.h"
 #include "MobTemplate.h"
@@ -11,12 +14,14 @@
 #include "Drop.h"
 #include "AttackInfo.h"
 #include "SecondaryStat.h"
-#include "WvsGameConstants.hpp"
+#include "NpcTemplate.h"
+#include "..\WvsLib\Common\WvsGameConstants.hpp"
 
 #include <cmath>
 
+
 LifePool::LifePool()
-	: m_pCtrlNull(new Controller(nullptr))
+	: m_pCtrlNull(AllocObjCtor(Controller)(nullptr))
 {
 }
 
@@ -24,31 +29,33 @@ LifePool::LifePool()
 LifePool::~LifePool()
 {
 	for (auto& p : m_aMobGen)
-		delete p.second;
+		FreeObj( p.second );
 	for (auto& p : m_aNpcGen)
-		delete p.second;
+		FreeObj( p.second );
 	for (auto& p : m_hCtrl)
-		delete p.second;
-	delete m_pCtrlNull;
+		FreeObj( p.second );
+	FreeObj( m_pCtrlNull );
 }
 
 void LifePool::Init(Field* pField, int nFieldID)
 {
 	m_pField = pField;
 
-	int sizeX = 1920;
-	int sizeY = 1080; //I dont know
-	int genSize = (int)(((double)sizeX * sizeY) * 0.0000048125f);
-	if (genSize < 1)
-		genSize = 1;
-	else if (genSize >= MAX_MOB_GEN)
-		genSize = MAX_MOB_GEN;
-	m_nMobCapacityMin = genSize;
-	m_nMobCapacityMax = genSize * 2;
+	int nSizeX = 1920;
+	int nSizeY = 1080; //I dont know
+	int nGenSize = (int)(((double)nSizeX * nSizeY) * 0.0000048125f);
+	if (nGenSize < 1)
+		nGenSize = 1;
+	else if (nGenSize >= MAX_MOB_GEN)
+		nGenSize = MAX_MOB_GEN;
+	m_nMobCapacityMin = nGenSize;
+	m_nMobCapacityMax = nGenSize * 2 * pField->GetMobRate();
 
-	auto& mapWz = stWzResMan->GetWz(Wz::Map)["Map"]["Map" + std::to_string(nFieldID / 100000000)][std::to_string(nFieldID)];
+	auto& mapWz = stWzResMan->GetWz(Wz::Map)["Map"]
+		["Map" + std::to_string(nFieldID / 100000000)]
+		[StringUtility::LeftPadding(std::to_string(nFieldID), 9, '0')];
+
 	auto& lifeData = mapWz["life"];
-	printf("Map Size =  %d %d\n", m_pField->GetMapSizeX(), m_pField->GetMapSizeY());
 	for (auto& node : lifeData)
 	{
 		const auto &typeFlag = (std::string)node["type"];
@@ -80,14 +87,25 @@ void LifePool::SetFieldObjAttribute(FieldObj* pFieldObj, WZ::Node& dataNode)
 		pFieldObj->SetTemplateID(atoi(((std::string)dataNode["id"]).c_str()));
 	}
 	catch (std::exception& e) {
-		printf("讀取地圖物件發生錯誤，訊息:%s\n", e.what());
+		WvsLogger::LogFormat(WvsLogger::LEVEL_ERROR, "讀取地圖物件發生錯誤，訊息:%s\n", e.what());
 	}
+}
+
+void LifePool::SetMaxMobCapacity(int max)
+{
+	m_nMobCapacityMax = max;
+}
+
+int LifePool::GetMaxMobCapacity() const
+{
+	return m_nMobCapacityMax;
 }
 
 void LifePool::LoadNpcData(WZ::Node& dataNode)
 {
 	Npc npc;
 	SetFieldObjAttribute(&npc, dataNode);
+	npc.SetTemplate(NpcTemplate::GetInstance()->GetNpcTemplate(npc.GetTemplateID()));
 	m_lNpc.push_back(npc);
 }
 
@@ -103,7 +121,7 @@ void LifePool::LoadMobData(WZ::Node& dataNode)
 void LifePool::CreateNpc(const Npc& npc)
 {
 	std::lock_guard<std::mutex> lock(m_lifePoolMutex);
-	Npc* newNpc = new Npc();
+	Npc* newNpc = AllocObj(Npc);
 	*newNpc = npc; //Should notice pointer data assignment
 	newNpc->SetFieldObjectID(atomicObjectCounter++);
 	m_aNpcGen.insert({ newNpc->GetFieldObjectID(), newNpc });
@@ -136,15 +154,15 @@ void LifePool::CreateMob(const Mob& mob, int x, int y, int fh, int bNoDropPriori
 
 	if (pController && pController != this->m_pCtrlNull)
 	{
-		Mob* newMob = new Mob;
+		Mob* newMob = AllocObj( Mob );
 		*newMob = mob;
 		newMob->SetField(m_pField);
 		newMob->SetFieldObjectID(atomicObjectCounter++);
 
 		int moveAbility = newMob->GetMobTemplate()->m_nMoveAbility;
 
-		newMob->SetHp(newMob->GetMobTemplate()->m_lnMaxHP);
-		newMob->SetMp((int)newMob->GetMobTemplate()->m_lnMaxMP);
+		newMob->SetHP(newMob->GetMobTemplate()->m_lnMaxHP);
+		newMob->SetMP((int)newMob->GetMobTemplate()->m_lnMaxMP);
 		newMob->SetMovePosition(x, y, bLeft & 1 | 2 * (moveAbility == 3 ? 6 : (moveAbility == 0 ? 1 : 0) + 1), fh);
 		newMob->SetMoveAction(5); //怪物 = 5 ?
 
@@ -156,6 +174,8 @@ void LifePool::CreateMob(const Mob& mob, int x, int y, int fh, int bNoDropPriori
 		newMob->SendChangeControllerPacket(pController->GetUser(), 1);
 		pController->AddCtrlMob(newMob);
 
+		//19/05/07 +
+		UpdateCtrlHeap(pController);
 		m_aMobGen.insert({ newMob->GetFieldObjectID(), newMob });
 	}
 }
@@ -165,13 +185,18 @@ void LifePool::RemoveMob(Mob * pMob)
 	if (pMob == nullptr)
 		return;
 	auto pController = pMob->GetController();
-	if (pController != nullptr)
+	if (pController->GetUser() != nullptr)
+	{
 		pController->RemoveCtrlMob(pMob);
-	pMob->SendReleaseControllPacket(pController->GetUser(), pMob->GetFieldObjectID());
+		pMob->SendReleaseControllPacket(pController->GetUser(), pMob->GetFieldObjectID());
+	}
+	else
+		m_pCtrlNull->RemoveCtrlMob(pMob);
 	OutPacket oPacket;
 	pMob->MakeLeaveFieldPacket(&oPacket);
 	m_pField->SplitSendPacket(&oPacket, nullptr);
 	m_aMobGen.erase(pMob->GetFieldObjectID());
+	FreeObj( pMob );
 }
 
 void LifePool::OnEnter(User *pUser)
@@ -186,17 +211,19 @@ void LifePool::OnEnter(User *pUser)
 		npc.second->SendChangeControllerPacket(pUser);
 		pUser->SendPacket(&oPacket);
 	}
+	//WvsLogger::LogFormat("LifePool::OnEnter : Total Mob = %d\n", m_aMobGen.size());
 	for (auto& mob : m_aMobGen)
 	{
 		OutPacket oPacket;
 		mob.second->MakeEnterFieldPacket(&oPacket);
 		pUser->SendPacket(&oPacket);
 	}
+	//WvsLogger::LogFormat("LifePool::OnEnter : Total Controlled = %d Null Controlled = %d\n size of m_hCtrl = %d", m_mController[pUser->GetUserID()]->second->GetTotalControlledCount(), m_pCtrlNull->GetTotalControlledCount(), m_hCtrl.size());
 }
 
 void LifePool::InsertController(User* pUser)
 {
-	Controller* controller = new Controller(pUser);
+	Controller* controller = AllocObjCtor(Controller)(pUser) ;
 	auto& iter = m_hCtrl.insert({ 0, controller });
 	m_mController.insert({ pUser->GetUserID(), iter });
 	RedistributeLife();
@@ -237,7 +264,7 @@ void LifePool::RemoveController(User* pUser)
 	}
 
 	//銷毀
-	delete pController;
+	FreeObj( pController );
 }
 
 void LifePool::UpdateCtrlHeap(Controller * pController)
@@ -266,18 +293,22 @@ void LifePool::RedistributeLife()
 	if (nCtrlCount > 0)
 	{
 		auto& nonControlled = m_pCtrlNull->GetMobCtrlList();
-		for (auto pMob : nonControlled)
+		//for (auto pMob : nonControlled)
+		for(auto iter = nonControlled.begin(); iter != nonControlled.end(); )
 		{
+			auto pMob = *iter;
 			pCtrl = m_hCtrl.begin()->second;
 
 			//控制NPC與怪物數量總和超過50，重新配置
 			if (pCtrl->GetTotalControlledCount() >= 50)
 				break;
 			pCtrl->AddCtrlMob(pMob);
-
 			pMob->SetController(pCtrl);
 			pMob->SendChangeControllerPacket(pCtrl->GetUser(), 1);
 			UpdateCtrlHeap(pCtrl);
+
+			m_pCtrlNull->RemoveCtrlMob(pMob);
+			iter = nonControlled.begin();
 		}
 		//NPC
 
@@ -286,7 +317,7 @@ void LifePool::RedistributeLife()
 		//重新調配每個人的怪物控制權
 		if (nCtrlCount >= 2) //至少一個minCtrl與maxCtrl
 		{
-			while (1) 
+			while (true) 
 			{
 				minCtrl = m_hCtrl.begin()->second;
 				maxCtrl = m_hCtrl.rbegin()->second;
@@ -294,11 +325,13 @@ void LifePool::RedistributeLife()
 				nMaxMobCtrl = maxCtrl->GetMobCtrlCount();
 				nMinNpcCtrl = minCtrl->GetNpcCtrlCount();
 				nMinMobCtrl = minCtrl->GetMobCtrlCount();
+				WvsLogger::LogFormat("Min Ctrl User = %d(%d), Max Ctrl User = %d(%d)\n", minCtrl->GetUser()->GetUserID(), nMinMobCtrl, maxCtrl->GetUser()->GetUserID(), nMaxMobCtrl);
 				//已經足夠平衡不需要再重新配給
 				if ((nMaxNpcCtrl + nMaxMobCtrl - (nMaxMobCtrl != 0) <= (nMinNpcCtrl - (nMinMobCtrl != 0) + nMinMobCtrl + 1))
-					|| ((nMaxNpcCtrl + nMaxMobCtrl - (nMaxMobCtrl != 0)) <= 20))
+					|| ((nMaxNpcCtrl + nMaxMobCtrl - (nMaxMobCtrl != 0)) <= 10))
 					break;
-				Mob* pMob = maxCtrl->GetMobCtrlList().back();
+				WvsLogger::LogFormat("Unbalanced.\n", minCtrl->GetUser()->GetUserID(), nMinMobCtrl, maxCtrl->GetUser()->GetUserID(), nMaxMobCtrl);
+				Mob* pMob = *(maxCtrl->GetMobCtrlList().rbegin());
 				maxCtrl->GetMobCtrlList().pop_back();
 				pMob->SendChangeControllerPacket(maxCtrl->GetUser(), 0);
 
@@ -319,7 +352,7 @@ void LifePool::Update()
 
 void LifePool::OnPacket(User * pUser, int nType, InPacket * iPacket)
 {
-	if (nType >= 0x369 && nType <= 0x380)
+	if (nType >= FlagMin(MobRecvPacketFlag) && nType <= FlagMax(MobRecvPacketFlag))
 	{
 		OnMobPacket(pUser, nType, iPacket);
 	}
@@ -346,15 +379,15 @@ void LifePool::OnUserAttack(User * pUser, const SkillEntry * pSkill, AttackInfo 
 		{
 			//printf("Monster %d Damaged : %d Total : %d\n", dmgInfo.first, dmgValue, pMob->GetMobTemplate()->m_lnMaxHP);
 			pMob->OnMobHit(pUser, dmgValue, pInfo->m_nType);
-			if (pMob->GetHp() <= 0)
+			if (pMob->GetHP() <= 0)
 			{
-				RemoveMob(pMob);
 				pMob->OnMobDead(
 					pMob->GetPosX(),
 					pMob->GetPosY(),
 					pUser->GetSecondaryStat()->nMesoUp,
 					pUser->GetSecondaryStat()->nMesoUpByItem
 				);
+				RemoveMob(pMob);
 				break;
 			}
 		}
@@ -363,24 +396,24 @@ void LifePool::OnUserAttack(User * pUser, const SkillEntry * pSkill, AttackInfo 
 
 void LifePool::EncodeAttackInfo(User * pUser, AttackInfo * pInfo, OutPacket * oPacket)
 {
-	oPacket->Encode2(pInfo->m_nType - ClientPacketFlag::OnUserAttack_MeleeAttack + 0x296);
+	oPacket->Encode2(pInfo->m_nType - UserRecvPacketFlag::User_OnUserAttack_MeleeAttack + UserSendPacketFlag::UserRemote_OnMeleeAttack);
 	oPacket->Encode4(pUser->GetUserID());
 	oPacket->Encode1(0);
 	oPacket->Encode1(pInfo->m_bAttackInfoFlag);
 	oPacket->Encode1((char)200);
-	if (pInfo->m_nSkillID > 0 || pInfo->m_nType == ClientPacketFlag::OnUserAttack_MagicAttack)
+	if (pInfo->m_nSkillID > 0 || pInfo->m_nType == UserRecvPacketFlag::User_OnUserAttack_MagicAttack)
 	{
 		oPacket->Encode1(pInfo->m_nSLV);
 		if (pInfo->m_nSLV > 0)
 			oPacket->Encode4(pInfo->m_nSkillID);
 	}
-	else if (pInfo->m_nType != ClientPacketFlag::OnUserAttack_ShootAttack)
+	else if (pInfo->m_nType != UserRecvPacketFlag::User_OnUserAttack_ShootAttack)
 		oPacket->Encode1(0);
 
 	if (WvsGameConstants::IsZeroSkill(pInfo->m_nSkillID) && pInfo->m_nSkillID != 100001283)
 		oPacket->Encode1(0);
 
-	if (pInfo->m_nType == ClientPacketFlag::OnUserAttack_ShootAttack)
+	if (pInfo->m_nType == UserRecvPacketFlag::User_OnUserAttack_ShootAttack)
 		oPacket->Encode1(0);
 
 	if (pInfo->m_nSkillID == 80001850)
@@ -392,8 +425,8 @@ void LifePool::EncodeAttackInfo(User * pUser, AttackInfo * pInfo, OutPacket * oP
 	if (pInfo->m_nSkillID == 40021185 || pInfo->m_nSkillID == 42001006)
 		oPacket->Encode1(0);
 
-	if (pInfo->m_nType == ClientPacketFlag::OnUserAttack_ShootAttack || 
-		pInfo->m_nType == ClientPacketFlag::OnUserAttack_MeleeAttack)
+	if (pInfo->m_nType == UserRecvPacketFlag::User_OnUserAttack_ShootAttack ||
+		pInfo->m_nType == UserRecvPacketFlag::User_OnUserAttack_MeleeAttack)
 		oPacket->Encode1(0);
 
 	oPacket->Encode1(0);
@@ -442,12 +475,12 @@ void LifePool::EncodeAttackInfo(User * pUser, AttackInfo * pInfo, OutPacket * oP
 		oPacket->Encode2(0);
 		oPacket->Encode1(0);
 	}
-	if (pInfo->m_nType == ClientPacketFlag::OnUserAttack_ShootAttack) 
+	if (pInfo->m_nType == UserRecvPacketFlag::User_OnUserAttack_ShootAttack)
 	{
 		oPacket->Encode2(pUser->GetPosX());
 		oPacket->Encode2(pUser->GetPosY());
 	}
-	else if ((pInfo->m_nType == ClientPacketFlag::OnUserAttack_MagicAttack) && pInfo->m_tKeyDown > 0)
+	else if ((pInfo->m_nType == UserRecvPacketFlag::User_OnUserAttack_MagicAttack) && pInfo->m_tKeyDown > 0)
 		oPacket->Encode4(pInfo->m_tKeyDown);
 	
 	if (pInfo->m_nSkillID == 5321000 || 
@@ -503,7 +536,7 @@ void LifePool::OnMobPacket(User * pUser, int nType, InPacket * iPacket)
 	if (mobIter != m_aMobGen.end()) {
 		switch (nType)
 		{
-		case 0x369:
+		case MobRecvPacketFlag::Mob_OnMove:
 			m_pField->OnMobMove(pUser, mobIter->second, iPacket);
 			break;
 		}
@@ -524,4 +557,9 @@ void LifePool::OnNpcPacket(User * pUser, int nType, InPacket * iPacket)
 			iterNpc->second->OnUpdateLimitedInfo(pUser, iPacket);
 		}
 	}
+}
+
+int LifePool::GetForceAtomObjectID()
+{
+	return ++atomicForceAtomCounter;
 }

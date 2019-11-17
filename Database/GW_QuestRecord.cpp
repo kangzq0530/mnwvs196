@@ -1,8 +1,8 @@
 #include "GW_QuestRecord.h"
 #include "WvsUnified.h"
-#include "..\Common\Net\InPacket.h"
-#include "..\Common\Net\OutPacket.h"
-#include "..\Common\Utility\String\StringUtility.h"
+#include "..\WvsLib\Net\InPacket.h"
+#include "..\WvsLib\Net\OutPacket.h"
+#include "..\WvsLib\String\StringUtility.h"
 
 void GW_QuestRecord::Load(void* pRecordSet)
 {
@@ -29,12 +29,12 @@ void GW_QuestRecord::Save()
 
 	queryStatement.reset(GET_DB_SESSION);
 	queryStatement << "INSERT INTO QuestRecord VALUES(null, "
-		<< nQuestID << ", "
 		<< nCharacterID << ", "
+		<< nQuestID << ", "
 		<< nState << ", "
-		<< tTime << ", "
-		<< sStringRecord << ", "
-		<< mobRecord << ")";
+		<< tTime << ", \'"
+		<< sStringRecord << "\', \'"
+		<< mobRecord << "\')";
 	queryStatement.execute();
 }
 

@@ -2,18 +2,15 @@
 #include <iostream>
 #include <vector>
 #include <mutex>
-#include <thread>
-#include <condition_variable>
+#include <map>
 
 // Lua is written in C, so compiler needs to know how to link its libraries
 
-#include "..\ScriptLib\lapi.h"
-#include "..\ScriptLib\lua.h"
-#include "..\ScriptLib\lauxlib.h"
-#include "..\ScriptLib\lualib.h"
-
-
-#include "..\ScriptLib\luawrapper.hpp"
+#include "..\WvsLib\Script\lapi.h"
+#include "..\WvsLib\Script\lua.h"
+#include "..\WvsLib\Script\lauxlib.h"
+#include "..\WvsLib\Script\lualib.h"
+#include "..\WvsLib\Script\luawrapper.hpp"
 
 class User;
 class InPacket;
@@ -21,89 +18,115 @@ class OutPacket;
 
 class Script
 {
-	enum ScriptType
+public:
+	struct NPCConverstaionInfo
 	{
-		OnSay = 0x00,
-		OnSayImage = 0x02,
-		OnAskYesNo = 0x03,
-		OnAskText = 0x04,
-		OnAskNumber = 0x05,
-		OnAskMenu = 0x06,
-		OnAskQuiz = 0xFF,
-		OnAskSpeedQuiz = 0xFF,
-		OnAskAvatar = 0x0B,
-		OnAskAvatarZero = 0x26,
-		OnAskMixHair = 0x2C,
-		OnAskMixHairExZero = 0x2D,
-		OnAskCustomMixHairAndProb = 0x2F,
-		OnAskMixHairNew = 0x30,
-		OnAskMixHairNewExZero = 0x30,
-		OnAskAndroid = 0x0C,
-		OnAskPet = 0x0D,
-		OnAskPetAll = 0x0E,
-		OnAskActionPetEvolution = 0x0F,
-		OnInitialQuiz = 0x08,
-		OnInitialSpeedQuiz = 0x09,
-		OnICQuiz = 0x0A,
-		OnAskAcceptDecline = 0x11,
-		OnAskBoxText = 0xFF,
-		OnAskSlideMenu = 0x14,
-		OnAskSelectMenu = 0x1B,
-		OnAskAngelicBuster = 0x1C,
-		OnSayIllustration = 0x1D, //1D 1E
-		OnAskYesNoIllustration = 0x1F, //0x1F 0x20 0x22 0x23
-		OnAskMenuIllustration = 0x21, //0x21, 0x24
-		OnAskWeaponBox = 0x28,
-		OnAskUserSurvey = 0x2A,
-		OnAskScreenShinningStarMsg = 0x33,
-		OnAskNumberUseKeyPad = 0x36,
-		OnSpinOffGuitarRhythmGame = 0x37,
-		OnGhostParkEnter = 0x38,
+		std::string m_sTalkText;
+		int m_nMsgType, 
+			m_nSpeakerTypeID = 4, 
+			m_nSpeakerTemplateID, 
+			m_nSpeakerTemplateID_, 
+			m_tWait = 0, 
+			m_nPage = 0;
+		unsigned char m_nParam = 0, m_eColor = 0;
+
+		std::vector<std::string> m_aStrObj;
+		std::vector<int> m_aIntObj;
+	};
+
+	struct NPCConversationState
+	{
+		std::vector<NPCConverstaionInfo> m_aPageStack;
+		int m_nCurPage = 0, m_nUserInput = 0;
+		std::string m_strUserInput;
+		bool m_bResume = false, m_bPaging = false;
+		std::map<std::string, std::string> m_mAttribute;
 	};
 
 	friend class ScriptMan;
+	void *m_pUniqueScriptNpc = nullptr;
 
-	lua_State* L;
-	//std::unique_ptr<lua_State, void(*)(lua_State*)> L;
-	std::mutex m_mtxWaitLock;
-	std::condition_variable m_cndVariable, m_doneVariable;
+private:
+	lua_State* L, *C; //L = Basic Lua State, C = Coroutine State
+	NPCConversationState m_sState;
+	NPCConverstaionInfo m_sLastConversationInfo;
 
-	static int SelfSay(lua_State* L);
-	static int SelfAskAvatar(lua_State* L);
-	static int SelfSayNext(lua_State* L);
-	static int SelfAskText(lua_State* L);
-	static int SelfAskNumber(lua_State* L);
-	static int SelfAskYesNo(lua_State* L);
-	static int SelfAskMenu(lua_State* L);
-	static int SelfPushArray(lua_State* L);
-	static Script* GetSelf(lua_State* L);
+	int m_nID;
+	std::string m_fileName;
 
-	static luaL_Reg SelfTable[];
-	static luaL_Reg SelfMetatable[];
-
-	int m_nID, m_nUserInput;
-	std::string m_fileName, m_strUserInput;
 	User *m_pUser;
-	std::thread* m_pThread;
-	std::vector<int> m_aArrayObj;
 	bool m_bDone = false;
 
+	void(*m_pOnPacketInvoker)(InPacket*, Script*, lua_State*);
+
 public:
+	Script(const std::string& file, int nNpcIDconst, const std::vector<void(*)(lua_State*)>& aReg);
+	~Script();
+	static Script* GetSelf(lua_State * L);
+	static void DestroySelf(lua_State * L, Script* p);
+
+	static void Register(lua_State* L);
 	void Wait();
 	void Notify();
 	void Run();
 	void Abort();
 	bool IsDone();
-
+	bool Init();
 	void OnPacket(InPacket *iPacket);
 
-	Script(const std::string& file, int nNpcID);
-	~Script();
-
-	static int LuaRegisterSelf(lua_State* L);
-
+	int GetID() const; 
 	void SetUser(User *pUser);
+	User* GetUser();
+	lua_State* GetLuaState();
+	lua_State* GetLuaCoroutineState();
 
-	std::thread* GetThread();
-	void SetThread(std::thread* pThread);
+	NPCConversationState& GetConverstaionState();
+
+	void SetLastConversationInfo(const NPCConverstaionInfo& refInfo);
+	NPCConverstaionInfo& GetLastConversationInfo();
+	
+	template<typename T>
+	void RetrieveArray(std::vector<T>& out, int nLuaObjIndex);
+
+	template<>
+	void RetrieveArray<std::string>(std::vector<std::string>& out, int nLuaObjIndex);
+
+	template<typename T>
+	void PushClassObject(T *pObj);
 };
+
+template<typename T>
+inline void Script::RetrieveArray(std::vector<T>& out, int nLuaObjIndex)
+{
+	int nSize = (int)lua_rawlen(L, nLuaObjIndex);
+	for (int i = 0; i < nSize; ++i)
+	{
+		lua_pushinteger(L, i + 1);
+		lua_gettable(L, -2);
+		out.push_back((T)lua_tonumber(L, -1));
+		lua_pop(L, 1);
+	}
+}
+
+template<>
+inline void Script::RetrieveArray<std::string>(std::vector<std::string>& out, int nLuaObjIndex)
+{
+	int nSize = (int)lua_rawlen(L, nLuaObjIndex);
+	for (int i = 0; i < nSize; ++i)
+	{
+		lua_pushinteger(L, i + 1);
+		lua_gettable(L, -2);
+		out.push_back(lua_tostring(L, -1));
+		lua_pop(L, 1);
+	}
+}
+
+template<typename T>
+inline void Script::PushClassObject(T *pObj)
+{
+	int numargs = lua_gettop(L);
+	luaW_push<T>(L, pObj); // ... args... ud
+	luaW_hold<T>(L, pObj);
+	lua_insert(L, -1 - numargs); // ... ud args...
+	luaW_postconstructor<T>(L, numargs); // ... ud
+}

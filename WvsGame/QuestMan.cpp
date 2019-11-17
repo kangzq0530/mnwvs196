@@ -1,5 +1,6 @@
 #include "QuestMan.h"
-#include "..\WvsLib\WzResMan.hpp"
+#include "..\WvsLib\Wz\WzResMan.hpp"
+#include "..\WvsLib\Memory\MemoryPoolMan.hpp"
 #include "ActItem.h"
 #include "ActQuest.h"
 #include "ActSP.h"
@@ -40,6 +41,8 @@ void QuestMan::LoadDemand()
 	auto &questInfoImg = stWzResMan->GetWz(Wz::Quest)["QuestInfo"];
 	for (auto& questImg : questInfoImg)
 		if ((int)questImg["autoStart"] == 1)
+			m_mAutoStartQuest.insert(atoi(questImg.Name().c_str()));
+		else if ((int)questImg["autoComplete"] == 1)
 			m_mAutoCompleteQuest.insert(atoi(questImg.Name().c_str()));
 }
 
@@ -49,7 +52,7 @@ void QuestMan::RegisterAct(void * pProp)
 	unsigned short nQuestID = atoi(actImg.Name().c_str());
 	for (auto& actNode : actImg)
 	{
-		QuestAct *pAct = new QuestAct;
+		QuestAct *pAct = AllocObj(QuestAct);
 		pAct->nEXP = actNode["exp"];
 		pAct->nCraftEXP = actNode["craftEXP"];
 		pAct->nCharismaEXP = actNode["charismaEXP"];
@@ -62,17 +65,21 @@ void QuestMan::RegisterAct(void * pProp)
 		pAct->nBuffItemID = actNode["buffItemID"];
 		pAct->nTransferField = actNode["transferField"];
 		pAct->nNextQuest = actNode["nextQuest"];
+		pAct->sInfo = actNode["info"];
 
 		auto& itemNode = actNode["item"];
 		for (auto& itemAct : itemNode)
 		{
-			ActItem *pActItem = new ActItem;
+			ActItem *pActItem = AllocObj(ActItem);
 			pActItem->nItemID = itemAct["id"];
 			pActItem->nCount = itemAct["count"];
 			pActItem->nJob = itemAct["job"];
 			pActItem->nJobEx = itemAct["jobEx"];
 			pActItem->nPeriod = itemAct["period"];
 			pActItem->nProp = itemAct["prop"];
+			pActItem->nGender = 2;
+			if (itemAct["gender"])
+				pActItem->nGender = itemAct["gender"];
 			//pActItem->strPotentialGrade = (std::string)itemAct["potentialGrade"];
 			pAct->aActItem.push_back(pActItem);
 		}
@@ -80,7 +87,7 @@ void QuestMan::RegisterAct(void * pProp)
 		auto& spNode = actNode["sp"];
 		for (auto& spAct : spNode)
 		{
-			ActSP *pActSP = new ActSP;
+			ActSP *pActSP = AllocObj(ActSP);
 			pActSP->nSPValue = spAct["sp_value"];
 			for (auto& applyJob : spAct)
 				pActSP->aJob.push_back((int)applyJob);
@@ -90,7 +97,7 @@ void QuestMan::RegisterAct(void * pProp)
 		auto& skillNode = actNode["skill"];
 		for (auto& skillAct : skillNode)
 		{
-			ActSkill *pActSkill = new ActSkill;
+			ActSkill *pActSkill = AllocObj(ActSkill);
 			pActSkill->nSkillID = skillAct["id"];
 			pActSkill->nMasterLevel = skillAct["masterLevel"];
 			pActSkill->nSkillLevel = skillAct["skillLevel"];
@@ -100,7 +107,7 @@ void QuestMan::RegisterAct(void * pProp)
 		auto& questNode = actNode["quest"];
 		for (auto& questAct : questNode)
 		{
-			ActQuest *pActQuest = new ActQuest;
+			ActQuest *pActQuest = AllocObj(ActQuest);
 			pActQuest->nQuestID = questAct["id"];
 			pActQuest->nState = questAct["state"];
 			pAct->aActQuest.push_back(pActQuest);
@@ -111,7 +118,7 @@ void QuestMan::RegisterAct(void * pProp)
 		else if (actNode.Name() == "1")
 			m_mCompleteAct.insert({ nQuestID, pAct });
 		else if (pAct != nullptr)
-			delete pAct;
+			FreeObj(pAct);
 	}
 }
 
@@ -121,7 +128,7 @@ void QuestMan::RegisterDemand(void * pProp)
 	unsigned short nQuestID = atoi(demandImg.Name().c_str());
 	for (auto& demandNode : demandImg)
 	{
-		QuestDemand *pDemand = new QuestDemand;
+		QuestDemand *pDemand = AllocObj(QuestDemand);
 		pDemand->nPartyQuest_S = demandNode["paryQuest_S"];
 		pDemand->nDayByDay = demandNode["dayByDay"];
 		pDemand->nNormalAutoStart = demandNode["normalAutoStart"];
@@ -170,7 +177,7 @@ void QuestMan::RegisterDemand(void * pProp)
 		else if (demandNode.Name() == "1")
 			m_mCompleteDemand.insert({ nQuestID, pDemand });
 		else if (pDemand != nullptr)
-			delete pDemand;
+			FreeObj(pDemand);
 	}
 }
 
@@ -178,6 +185,12 @@ QuestMan * QuestMan::GetInstance()
 {
 	static QuestMan* pInstance = new QuestMan;
 	return pInstance;
+}
+
+bool QuestMan::IsAutoStartQuest(int nQuestID)
+{
+	auto findIter = m_mAutoStartQuest.find(nQuestID);
+	return findIter != m_mAutoStartQuest.end();
 }
 
 bool QuestMan::IsAutoCompleteQuest(int nQuestID)
@@ -235,7 +248,7 @@ bool QuestMan::CheckStartDemand(int nQuestID, User * pUser)
 			false,
 			false,
 			false,
-			false) < skill.second);
+			false) < skill.second)
 			return false;
 
 	//Check item req.
@@ -246,4 +259,78 @@ bool QuestMan::CheckStartDemand(int nQuestID, User * pUser)
 			return false;
 	}
 	return true;
+}
+
+bool QuestMan::CheckCompleteDemand(int nQuestID, User * pUser)
+{
+	auto findIter = m_mCompleteDemand.find(nQuestID);
+	if (findIter == m_mCompleteDemand.end())
+		return false;
+	auto pDemand = findIter->second;
+
+	//Check level req.
+	int nLevel = pUser->GetCharacterData()->mLevel->nLevel;
+	if ((pDemand->nLVMax != 0 && nLevel > pDemand->nLVMax) ||
+		(pDemand->nLVMin != 0 && nLevel < pDemand->nLVMin))
+		return false;
+
+	//Check field req.
+	bool bCheck = pDemand->m_aFieldEnter.size() == 0 ? true : false;
+	for (auto& field : pDemand->m_aFieldEnter)
+		if (pUser->GetField()->GetFieldID() == field)
+		{
+			bCheck = true;
+			break;
+		}
+	if (!bCheck)
+		return false;
+
+	//Check job req.
+	bCheck = pDemand->m_aDemandJob.size() == 0 ? true : false;
+	for (auto& job : pDemand->m_aDemandJob)
+		if (pUser->GetCharacterData()->mStat->nJob == job)
+		{
+			bCheck = true;
+			break;
+		}
+	if (!bCheck)
+		return false;
+
+	//Check quest req.
+	for (auto& quest : pDemand->m_mDemandQuest)
+		if (QWUQuestRecord::GetState(pUser, quest.first) < quest.second)
+			return false;
+
+	//Check skill req.
+	for (auto& skill : pDemand->m_mDemandSkill)
+		if (SkillInfo::GetInstance()->GetSkillLevel(
+			pUser->GetCharacterData(),
+			skill.second,
+			nullptr,
+			false,
+			false,
+			false,
+			false) < skill.second)
+			return false;
+
+	//Check item req.
+	for (auto& item : pDemand->m_mDemandItem)
+	{
+		auto nCount = pUser->GetCharacterData()->GetItemCount(item.first / 1000000, item.first);
+		if (nCount < item.second)
+			return false;
+	}
+	return true;
+}
+
+QuestAct * QuestMan::GetStartAct(int nQuestID)
+{
+	auto findIter = m_mStartAct.find(nQuestID);
+	return findIter != m_mStartAct.end() ? findIter->second : nullptr;
+}
+
+QuestAct * QuestMan::GetCompleteAct(int nQuestID)
+{
+	auto findIter = m_mCompleteAct.find(nQuestID);
+	return findIter != m_mCompleteAct.end() ? findIter->second : nullptr;
 }

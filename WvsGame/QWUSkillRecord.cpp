@@ -1,13 +1,13 @@
 #include "QWUSkillRecord.h"
-#include "..\Common\Net\OutPacket.h"
-#include "..\Common\Net\PacketFlags\ClientPacketFlags.hpp"
+#include "..\WvsLib\Net\OutPacket.h"
+#include "..\WvsLib\Net\PacketFlags\UserPacketFlags.hpp"
 #include "..\Database\GA_Character.hpp"
 #include "..\Database\GW_CharacterStat.h"
 #include "..\Database\GW_SkillRecord.h"
 #include "User.h"
 #include "SkillInfo.h"
-#include "WvsGameConstants.hpp"
-
+#include "..\WvsLib\Common\WvsGameConstants.hpp"
+#include "..\WvsLib\Logger\WvsLogger.h"
 
 QWUSkillRecord::QWUSkillRecord()
 {
@@ -62,16 +62,16 @@ bool QWUSkillRecord::SkillUp(User * pUser, int nSkillID, int nAmount, bool bDecS
 
 void QWUSkillRecord::SendCharacterSkillRecord(User * pUser, std::vector<GW_SkillRecord*>& aChange)
 {
-	printf("SendCharacterSkillRecord Called, size = %d\n", (int)aChange.size());
+	WvsLogger::LogFormat(WvsLogger::LEVEL_INFO, "SendCharacterSkillRecord Called, size = %d\n", (int)aChange.size());
 	OutPacket oPacket;
-	oPacket.Encode2(ClientPacketFlag::OnUserSkillUp);
+	oPacket.Encode2(UserSendPacketFlag::UserLocal_OnChangeSkillRecordResult);
 	oPacket.Encode1(1);
 	oPacket.Encode1(0);
 	oPacket.Encode1(0);
 	oPacket.Encode2((short)aChange.size());
 	for (auto pSkillRecord : aChange)
 	{
-		printf("SendCharacterSkillRecord Skill ID = %d SLV = %d\n", pSkillRecord->nSkillID, pSkillRecord->nSLV);
+		WvsLogger::LogFormat(WvsLogger::LEVEL_INFO, "SendCharacterSkillRecord Skill ID = %d SLV = %d\n", pSkillRecord->nSkillID, pSkillRecord->nSLV);
 		oPacket.Encode4(pSkillRecord->nSkillID);
 		oPacket.Encode4(pSkillRecord->nSLV);
 		oPacket.Encode4(pSkillRecord->nMasterLevel);

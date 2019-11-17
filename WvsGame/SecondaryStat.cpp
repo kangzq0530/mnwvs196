@@ -1,11 +1,24 @@
 #include "SecondaryStat.h"
 #include "BasicStat.h"
+#include "ItemInfo.h"
+#include "KaiserSkills.h"
 #include "SkillInfo.h"
 #include "SkillEntry.h"
 #include "SkillLevelData.h"
+#include "USkill.h"
+#include "User.h"
+#include "Field.h"
+#include "LifePool.h"
+#include "ForceAtom.h"
+
 #include "..\Database\GA_Character.hpp"
 #include "..\Database\GW_ItemSlotEquip.h"
-#include "..\Common\Net\OutPacket.h"
+#include "..\Database\GW_CharacterLevel.h"
+
+#include "..\WvsLib\Net\OutPacket.h"
+#include "..\WvsLib\Net\InPacket.h"
+
+#include "..\WvsLib\Logger\WvsLogger.h"
 
 #define CHECK_TS_NORMAL(name) \
 if (flag & GET_TS_FLAG(name)) \
@@ -22,7 +35,7 @@ SecondaryStat::~SecondaryStat()
 {
 }
 
-void SecondaryStat::SetFrom(int nFieldType, GA_Character * pChar, BasicStat * pBS, void * pFs, void * pNonBodyEquip, int nMHPForPvP, void * pPSD)
+void SecondaryStat::SetFrom(GA_Character * pChar, BasicStat * pBS)
 {
 	const GW_CharacterStat *pCS = pChar->mStat;
 
@@ -563,12 +576,7 @@ void SecondaryStat::EncodeForLocal(OutPacket * oPacket, TemporaryStat::TS_Flag &
 		oPacket->Encode1((int)bIgnoreTargetDEF);
 
 	if (flag & GET_TS_FLAG(StopForceAtomInfo))
-	{
-		oPacket->Encode4(0); //nIdx
-		oPacket->Encode4(0); //nCount
-		oPacket->Encode4(0); //nWeaponID
-		oPacket->Encode4(0); //
-	}
+		sStopForceAtomInfo.Encode(oPacket);
 
 	if (flag & GET_TS_FLAG(SmashStack))
 		oPacket->Encode4(xSmashStack);
@@ -730,31 +738,48 @@ void SecondaryStat::EncodeForLocal(OutPacket * oPacket, TemporaryStat::TS_Flag &
 	oPacket->Encode4(0);
 	oPacket->Encode4(0);
 
-	printf("Encode Local TS : \n");
+	WvsLogger::LogRaw(WvsLogger::LEVEL_INFO, "Encode Local TS : \n");
 	oPacket->Print();
 }
 
 void SecondaryStat::EncodeForRemote(OutPacket * oPacket, TemporaryStat::TS_Flag & flag)
 {
+	flag.Encode(oPacket);
+
+	oPacket->Encode1((char)nDefenseAtt);
+	oPacket->Encode1((char)nDefenseState);
+	oPacket->Encode1((char)nPVPDamage);
+
+	sStopForceAtomInfo.Encode(oPacket);
+
+	oPacket->Encode4(0); //nViperCharge
+
+	//RideVechicle
 }
 
 void SecondaryStat::EncodeIndieTempStat(OutPacket * oPacket, TemporaryStat::TS_Flag & flag)
 {
 	int nValue, rValue, tValue = 0;
+	bool bValid = false;
 	for (int i = 0; i <= TemporaryStat::TS_INDIE_STAT_COUNT; ++i)
 	{
 		if (flag & TemporaryStat::TS_Flag(i))
 		{
-			nValue = m_mSetByTS[i].second.size() != 0 ? *(m_mSetByTS[i].second[0]) : 0;
-			rValue = m_mSetByTS[i].second.size() != 0 ? *(m_mSetByTS[i].second[1]) : 0;
-			tValue = m_mSetByTS[i].second.size() != 0 ? *(m_mSetByTS[i].second[2]) : 0;
-			oPacket->Encode4(1);
-			oPacket->Encode4(rValue);
-			oPacket->Encode4(nValue);
-			oPacket->Encode4(INT_MAX);
-			oPacket->Encode4(1);
-			oPacket->Encode4(tValue);
-			oPacket->Encode4(0);
+			auto& mIndieTS = m_mSetByIndieTS[i];
+			oPacket->Encode4((int)mIndieTS.size());
+			for (auto& indieTS : mIndieTS)
+			{
+				bValid = indieTS.second.second.size() != 0;
+				nValue = bValid ? (indieTS.second.second[0]) : 0;
+				rValue = bValid ? (indieTS.second.second[1]) : 0;
+				tValue = bValid ? (indieTS.second.second[2]) : 0;
+				oPacket->Encode4(rValue);
+				oPacket->Encode4(nValue);
+				oPacket->Encode4(INT_MAX);
+				oPacket->Encode4(1);
+				oPacket->Encode4(tValue);
+				oPacket->Encode4(0);
+			}
 		}
 	}
 }
@@ -778,10 +803,240 @@ bool SecondaryStat::EnDecode4Byte(TemporaryStat::TS_Flag & flag)
 		|| (flag & GET_TS_FLAG(MagnetArea))
 		|| (flag & GET_TS_FLAG(RideVehicle)))
 		return true;
-	printf("EnDecode4Byte [False]\n");
+	WvsLogger::LogRaw(WvsLogger::LEVEL_INFO, "EnDecode4Byte [False]\n");
 	return false;
 }
 
-void SecondaryStat::ResetByTime(int tCur)
+void SecondaryStat::ResetByTime(User* pUser, int tCur)
 {
+	std::vector<int> aSkillResetReason;
+	auto pSS = pUser->GetSecondaryStat();
+	for (auto& setFlag : pSS->m_mSetByTS)
+	{
+		int nID = *(setFlag.second.second[1]);
+		int tValue = *(setFlag.second.second[2]);
+		if (!((tCur - setFlag.second.first) > tValue))
+			continue;
+		if (nID < 0)
+		{
+			auto pItemInfo = ItemInfo::GetInstance()->GetStateChangeItem(-nID);
+			if (pItemInfo)
+				pUser->SendTemporaryStatReset(pItemInfo->Apply(pUser, 0, false, true));
+		}
+		else 
+			aSkillResetReason.push_back(nID);
+	}
+
+	//IndieTS
+	for (auto& mIndieTS : pSS->m_mSetByIndieTS)
+	{
+		for (auto& indieTS : mIndieTS.second)
+		{
+			int nID = (indieTS.second.second[1]);
+			int tValue = (indieTS.second.second[2]);
+			if (!((tCur - indieTS.second.first) > tValue))
+				continue;
+			if (nID < 0)
+			{
+				auto pItemInfo = ItemInfo::GetInstance()->GetStateChangeItem(-nID);
+				if (pItemInfo)
+					pUser->SendTemporaryStatReset(pItemInfo->Apply(pUser, 0, false, true));
+			}
+			else
+				aSkillResetReason.push_back(nID);
+		}
+	}
+	USkill::ResetTemporaryByTime(pUser, aSkillResetReason);
+}
+
+void SecondaryStat::DecodeInternal(User* pUser, InPacket * iPacket)
+{
+	bool bDecodeInternal = iPacket->Decode1() == 1;
+	if (!bDecodeInternal)
+		return;
+	int nChannelID = iPacket->Decode4();
+
+	//Decode Temporary Internal
+	int nCount = iPacket->Decode4(), nSkillID, tDurationRemained, nSLV;
+	for (int i = 0; i < nCount; ++i)
+	{
+		nSkillID = iPacket->Decode4();
+		tDurationRemained = iPacket->Decode4();
+		nSLV = iPacket->Decode4();
+		WvsLogger::LogFormat("Decode Internal ID = %d, tValue = %d, nSLV = %d\n", nSkillID, tDurationRemained, nSLV);
+		if (nSkillID < 0)
+		{
+			auto pItem = ItemInfo::GetInstance()->GetStateChangeItem(-nSkillID);
+			if (pItem)
+				pItem->Apply(pUser, 0, false, false, true, tDurationRemained);
+		}
+		else
+			USkill::OnSkillUseRequest(
+				pUser,
+				nullptr,
+				SkillInfo::GetInstance()->GetSkillByID(nSkillID),
+				nSLV,
+				false,
+				true,
+				tDurationRemained
+			);
+	}
+}
+
+void SecondaryStat::EncodeInternal(User* pUser, OutPacket * oPacket)
+{
+	std::lock_guard<std::recursive_mutex> userGuard(pUser->GetLock());
+
+	oPacket->Encode4(pUser->GetChannelID());
+
+	//Encode Temporary Internal
+	auto pSS = pUser->GetSecondaryStat();
+	oPacket->Encode4((int)pSS->m_mSetByTS.size() + (int)pSS->m_mSetByIndieTS.size());
+	for (auto& setFlag : pSS->m_mSetByTS)
+	{
+		int nSkillID = *(setFlag.second.second[1]);
+		int tDurationRemained = (int)setFlag.second.first;
+		int nSLV = *(setFlag.second.second[3]);
+		oPacket->Encode4(nSkillID);
+		oPacket->Encode4(tDurationRemained);
+		oPacket->Encode4(nSLV);
+	}
+
+	for (auto& mIndieTS : pSS->m_mSetByIndieTS)
+	{
+		for (auto& setFlag : mIndieTS.second)
+		{
+			int nSkillID = (setFlag.second.second[1]);
+			int tDurationRemained = (int)setFlag.second.first;
+			int nSLV = (setFlag.second.second[3]);
+			oPacket->Encode4(nSkillID);
+			oPacket->Encode4(tDurationRemained);
+			oPacket->Encode4(nSLV);
+		}
+	}
+}
+
+//³Ç¿Õ¯à¶q¸É¥R
+void SecondaryStat::ChargeSurplusSupply(User * pUser, int nCount, int tUpdateTime)
+{
+	if (tUpdateTime - tSurplusSupply < 4000)
+		return;
+	int nLevel = pUser->GetCharacterData()->mLevel->nLevel;
+	int nMaxAmount = (nLevel >= 100 ? 20 : nLevel >= 60 ? 15 : nLevel >= 30 ? 10 : 5);
+	if (nCount > nMaxAmount)
+		nCount = nMaxAmount;
+	nSurplusSupply += nCount;
+	if (nSurplusSupply >= nMaxAmount)
+		nSurplusSupply = nMaxAmount;
+	auto tsFlag = GET_TS_FLAG(SurplusSupply);
+
+	pUser->SendTemporaryStatReset(tsFlag);
+	pUser->SendTemporaryStatSet(tsFlag, -1);
+	tSurplusSupply = tUpdateTime;
+}
+
+//³Í¼»Às³D²y¸É¥R
+void SecondaryStat::ChargeSmashStack(User * pUser, int tUpdateTime)
+{
+	const int nToCharge = 33, nMaxChargeValue = 1000;
+	if (xSmashStack + nToCharge > nMaxChargeValue)
+		return;
+
+	nSmashStack += nToCharge;
+	xSmashStack += nToCharge;
+
+	auto tsFlag = GET_TS_FLAG(SmashStack);
+	pUser->SendTemporaryStatReset(tsFlag);
+	pUser->SendTemporaryStatSet(tsFlag, -1);
+}
+
+void SecondaryStat::StopForceAtom::CreateStopForceAtom(User * pUser, int nSkillID)
+{
+	aAngelInfo.clear();
+
+	switch (nSkillID)
+	{
+		case KaiserSkills::TempestBlades_6110:
+			nIdx = 1;
+			nCount = 3;
+			break;
+		case KaiserSkills::TempestBlades_6111_2:
+			nIdx = 3;
+			nCount = 3;
+			break;
+		case KaiserSkills::AdvancedTempestBlades_6112:
+			nIdx = 2;
+			nCount = 5;
+			break;
+		case KaiserSkills::AdvancedTempestBlades_6112_2:
+			nIdx = 4;
+			nCount = 5;
+			break;
+	}
+	auto pWeapon = pUser->GetCharacterData()->GetItem(
+		GW_ItemSlotBase::EQUIP, -11
+	);
+	if (pWeapon)
+		nWeaponID = pWeapon->nItemID;
+}
+
+void SecondaryStat::StopForceAtom::Encode(OutPacket * oPacket)
+{
+	oPacket->Encode4(nIdx);
+	oPacket->Encode4(nCount);
+	oPacket->Encode4(nWeaponID);
+	for (int i = 0; i < nCount; ++i)
+		aAngelInfo.push_back(0);
+	//WvsLogger::LogFormat("StopForceAtom nIdx = %d nCount = %d nWeaponID = %d\n", nIdx, nCount, nWeaponID);
+	oPacket->Encode4((int)aAngelInfo.size());
+	for (const auto& value : aAngelInfo)
+		oPacket->Encode4(value);
+}
+
+void SecondaryStat::StopForceAtom::OnTempestBladesAttack(User *pUser, InPacket * iPacket)
+{
+	/*
+	¡G0xE9 0x01 
+	0x01 0x00 0x00 0x00 
+	0x09 0x10 0x00 0x00
+	*/
+	if (nCount > 0)
+	{
+		int nMobCount = iPacket->Decode4(), nMobObjID = 0;
+		std::vector<int> aMob;
+		for (int i = 0; i < nMobCount; ++i)
+		{
+			nMobObjID = iPacket->Decode4();
+			if (pUser->GetField()->GetLifePool()->GetMob(nMobObjID))
+				aMob.push_back(nMobObjID);
+		}
+
+		WvsLogger::LogFormat("aMob size() = %d xStopForceAtomInfo = %d nCount =%d\n", (int)aMob.size(), pUser->GetSecondaryStat()->xStopForceAtomInfo, nCount);
+		if (aMob.size() > 0)
+		{
+			ForceAtom atom;
+			++(pUser->GetSecondaryStat()->xStopForceAtomInfo);
+			atom.CreateForceAtom(
+				pUser->GetUserID(),
+				pUser->GetSecondaryStat()->rStopForceAtomInfo,
+				false,
+				true,
+				pUser->GetUserID(),
+				ForceAtom::ForceAtomType::e_TempestBlade,
+				pUser->GetSecondaryStat()->xStopForceAtomInfo,
+				nCount,
+				pUser->GetField(),
+				{ 0, 0 }
+			);
+			pUser->GetSecondaryStat()->xStopForceAtomInfo += (nCount - 1);
+
+			atom.m_adwTargetMob = aMob;
+			atom.OnForceAtomCreated(pUser->GetField());
+		}
+
+		USkill::ResetTemporaryByTime(
+			pUser,
+			{ pUser->GetSecondaryStat()->rStopForceAtomInfo }
+		);
+	}
 }

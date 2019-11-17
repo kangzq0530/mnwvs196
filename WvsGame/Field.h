@@ -1,25 +1,38 @@
 #pragma once
 #include <map>
+#include <mutex>
 #include <functional>
-#include "User.h"
-#include "Utility\Task\AsnycScheduler.h"
+#include "FieldPoint.h"
 
 class LifePool;
 class Mob;
 class Portal;
 class PortalMap;
 class TownPortalPool;
+class ReactorPool;
 class DropPool;
+class FieldSet;
+class User;
+class AsyncScheduler;
+class InPacket;
+class OutPacket;
+class WvsPhysicalSpace2D;
+class SummonedPool;
 
 class Field
 {
-	std::mutex fieldUserMutex;
+	std::mutex m_mtxFieldUserMutex, m_mtxFieldLock;
 	std::map<int, User*> m_mUser; //m_lUser in WvsGame.idb
 	int m_nFieldID = 0;
 	LifePool *m_pLifePool;
 	PortalMap *m_pPortalMap;
 	DropPool *m_pDropPool;
 	TownPortalPool *m_pTownPortalPool;
+	ReactorPool *m_pReactorPool;
+	SummonedPool* m_pSummonedPool;
+	FieldSet* m_pParentFieldSet = nullptr;
+	WvsPhysicalSpace2D* m_pSpace2D;
+	FieldPoint m_ptLeftTop, m_szMap;
 
 	std::string m_sStreetName, 
 				m_sMapName, 
@@ -36,15 +49,13 @@ class Field
 		 m_bSwim, 
 		 m_bFly;
 
-	int m_nReturnMap, 
-		m_nForcedReturn, 
-		m_nMobRate, 
-		m_nFieldType, 
-		m_nFieldLimit, 
-		m_nCreateMobInterval, 
-		m_nFixedMobCapacity, 
-		m_nMapSizeX, 
-		m_nMapSizeY;
+	int m_nReturnMap,
+		m_nForcedReturn,
+		m_nMobRate,
+		m_nFieldType,
+		m_nFieldLimit,
+		m_nCreateMobInterval,
+		m_nFixedMobCapacity;
 
 	std::string m_strFirstUserEnter, 
 				m_strUserEnter;
@@ -53,9 +64,6 @@ class Field
 	{
 		pField->Update();
 	}
-
-	std::_Binder<std::_Unforced, void(*)(Field* pField), Field* const> m_updateBinder;
-	AsnycScheduler::AsnycScheduler<decltype(m_updateBinder)>* m_asyncUpdateTimer;
 
 public:
 	Field();
@@ -105,11 +113,13 @@ public:
 	void SetUserEnter(const std::string& script);
 	const std::string& GetUserEnter() const;
 
-	void SetMapSizeX(int x);
-	int GetMapSizeX();
+	void SetMapSize(int x, int y);
+	const FieldPoint& GetMapSize() const;
+	void SetLeftTop(int x, int y);
+	const FieldPoint& GetLeftTop() const;
 
-	void SetMapSizeY(int y);
-	int GetMapSizeY();
+	void SetFieldSet(FieldSet *pFieldSet);
+	FieldSet *GetFieldSet();
 
 	void InitLifePool();
 
@@ -129,6 +139,12 @@ public:
 
 	PortalMap* GetPortalMap();
 	TownPortalPool* GetTownPortalPool();
+	ReactorPool* GetReactorPool();
+	SummonedPool* GetSummonedPool();
+
+	std::mutex& GetFieldLock();
+
+	WvsPhysicalSpace2D* GetSpace2D();
 
 	void Update();
 };

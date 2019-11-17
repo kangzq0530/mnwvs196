@@ -7,7 +7,10 @@ public:
 	GW_CharacterMoney();
 	~GW_CharacterMoney();
 
+#ifdef DBLIB
 	void Load(int nCharacterID);
-	void Save(int nCharacterID, bool isNewCharacter = false);
+	void Save(int nCharacterID, bool bIsNewCharacter = false);
+#endif
+
 };
 

@@ -1,12 +1,13 @@
 #include "ClientSocket.h"
-#include "Net\InPacket.h"
-#include "Net\OutPacket.h"
+#include "..\WvsLib\Net\InPacket.h"
+#include "..\WvsLib\Net\OutPacket.h"
 
-#include "Net\PacketFlags\GamePacketFlags.hpp"
-#include "Net\PacketFlags\ClientPacketFlags.hpp"
+#include "..\WvsLib\Net\PacketFlags\GamePacketFlags.hpp"
+#include "..\WvsLib\Net\PacketFlags\LoginPacketFlags.hpp"
 #include "WvsGame.h"
-
 #include "User.h"
+
+#include "..\WvsLib\Logger\WvsLogger.h"
 
 ClientSocket::ClientSocket(asio::io_service& serverService)
 	: SocketBase(serverService)
@@ -27,15 +28,15 @@ void ClientSocket::OnPacket(InPacket *iPacket)
 	int nType = (unsigned short)iPacket->Decode2();
 	switch (nType)
 	{
-	case ClientPacketFlag::ClientMigrateIn:
+	case LoginRecvPacketFlag::Client_ClientMigrateIn:
 		OnMigrateIn(iPacket);
 		break;
 	default:
 		if (pUser)
 		{
 			iPacket->RestorePacket();
-			if (nType != 0x369) {
-				printf("[WvsGame][ClientSocket::OnPacket]封包接收：");
+			if (nType == 0x96) {
+				WvsLogger::LogRaw("[WvsGame][ClientSocket::OnPacket]封包接收：");
 				iPacket->Print();
 			}
 			pUser->OnPacket(iPacket);
@@ -50,7 +51,7 @@ void ClientSocket::OnMigrateIn(InPacket *iPacket)
 	iPacket->Decode4();
 	int nCharacterID = iPacket->Decode4();
 	OutPacket oPacket;
-	oPacket.Encode2(GamePacketFlag::RequestMigrateIn);
+	oPacket.Encode2(GameSendPacketFlag::RequestMigrateIn);
 	oPacket.Encode4(GetSocketID());
 	oPacket.Encode4(nCharacterID);
 	pCenter->SendPacket(&oPacket);

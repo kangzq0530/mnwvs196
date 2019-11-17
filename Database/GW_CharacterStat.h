@@ -8,10 +8,13 @@ struct GW_CharacterStat
 {
 	static const int EXTEND_SP_SIZE = 10;
 
+	unsigned char nGender = 0;
+
 	int nHP = 0,
 		nMP = 0,
 		nMaxHP = 0,
 		nMaxMP = 0,
+		nFame = 0,
 		nJob = 0,
 		nSubJob = 0,
 		nStr = 0,
@@ -28,7 +31,8 @@ struct GW_CharacterStat
 		aSP[EXTEND_SP_SIZE],
 		nFace = 0,
 		nHair = 0,
-		nSkin = 0;
+		nSkin = 0,
+		nFaceMark = 0;
 
 	long long int nExp = 0;
 
@@ -40,7 +44,10 @@ public:
 	void EncodeExtendSP(OutPacket *oPacket);
 	void DecodeExtendSP(InPacket *iPacket);
 
+#ifdef DBLIB
 	void Load(int nCharacterID);
 	void Save(int nCharacterID, bool isNewCharacter);
+#endif
+
 };
 

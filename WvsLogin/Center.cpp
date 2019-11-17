@@ -2,19 +2,19 @@
 #include <functional>
 #include <thread>
 
-#include "Net\InPacket.h"
-#include "Net\OutPacket.h"
+#include "..\WvsLib\Net\InPacket.h"
+#include "..\WvsLib\Net\OutPacket.h"
 
-#include "Net\PacketFlags\LoginPacketFlags.hpp"
-#include "Net\PacketFlags\CenterPacketFlags.hpp"
-
-#include "Constants\ServerConstants.hpp"
+#include "..\WvsLib\Net\PacketFlags\LoginPacketFlags.hpp"
+#include "..\WvsLib\Net\PacketFlags\CenterPacketFlags.hpp"
+#include "..\WvsLib\DateTime\GameDateTime.h"
+#include "..\WvsLib\Common\ServerConstants.hpp"
 
 #include "WvsLogin.h"
+#include "..\WvsLib\Logger\WvsLogger.h"
 
 Center::Center(asio::io_service& serverService)
-	: SocketBase(serverService, true),
-	  mResolver(serverService)
+	: SocketBase(serverService, true)
 {
 }
 
@@ -27,48 +27,16 @@ void Center::SetCenterIndex(int idx)
 	nCenterIndex = idx;
 }
 
-void Center::OnConnectToCenter(const std::string& strAddr, short nPort)
+void Center::OnConnected()
 {
-	asio::ip::tcp::resolver::query centerSrvQuery(strAddr, std::to_string(nPort)); 
-	
-	mResolver.async_resolve(centerSrvQuery,
-		std::bind(&Center::OnResolve, std::dynamic_pointer_cast<Center>(shared_from_this()),
-			std::placeholders::_1,
-			std::placeholders::_2));
-}
-
-void Center::OnResolve(const std::error_code& err, asio::ip::tcp::resolver::iterator endpoint_iterator)
-{
-	if (!err)
-	{
-		asio::ip::tcp::endpoint endpoint = *endpoint_iterator;
-		GetSocket().async_connect(endpoint,
-			std::bind(&Center::OnConnect, std::dynamic_pointer_cast<Center>(shared_from_this()),
-				std::placeholders::_1, ++endpoint_iterator));
-	}
-	else
-	{
-	}
-}
-
-void Center::OnConnect(const std::error_code& err, asio::ip::tcp::resolver::iterator endpoint_iterator)
-{
-	if (err)
-	{
-		printf("[WvsLogin][Center::OnConnect]無法連線到Center Server，可能是服務尚未啟動或者確認連線資訊。\n");
-		bConnectionFailed = true;
-		OnDisconnect();
-		return;
-	}
-	printf("[WvsLogin][Center::OnConnect]成功連線到Center Server！\n");
-	bIsConnected = true;
+	WvsLogger::LogRaw(WvsLogger::LEVEL_INFO, "[WvsLogin][Center::OnConnect]成功連線到Center Server！\n");
 
 	//向Center Server發送Hand Shake封包
 	OutPacket oPacket;
-	oPacket.Encode2(LoginPacketFlag::RegisterCenterRequest);
+	oPacket.Encode2(LoginSendPacketFlag::Center_RegisterCenterRequest);
 
 	//WvsLogin的ServerType為SVR_LOGIN
-	oPacket.Encode1(ServerConstants::ServerType::SVR_LOGIN);
+	oPacket.Encode1(ServerConstants::ServerType::SRV_LOGIN);
 
 	SendPacket(&oPacket); 
 	OnWaitingPacket();
@@ -76,30 +44,30 @@ void Center::OnConnect(const std::error_code& err, asio::ip::tcp::resolver::iter
 
 void Center::OnPacket(InPacket *iPacket)
 {
-	printf("[WvsLogin][Center::OnPacket]封包接收：");
+	WvsLogger::LogRaw("[WvsLogin][Center::OnPacket]封包接收：");
 	iPacket->Print();
 	int nType = (unsigned short)iPacket->Decode2();
 	switch (nType)
 	{
-	case CenterPacketFlag::RegisterCenterAck:
+	case CenterSendPacketFlag::RegisterCenterAck:
 	{
 		auto result = iPacket->Decode1();
 		if (!result)
 		{
-			printf("[WvsLogin][RegisterCenterAck][錯誤]Center Server拒絕當前LocalServer連接，程式即將終止。\n");
+			WvsLogger::LogRaw(WvsLogger::LEVEL_ERROR, "[WvsLogin][RegisterCenterAck][錯誤]Center Server拒絕當前LocalServer連接，程式即將終止。\n");
 			exit(0);
 		}
-		printf("[WvsLogin][RegisterCenterAck]Center Server 認證完成，與世界伺服器連線成功建立。\n");
+		WvsLogger::LogRaw(WvsLogger::LEVEL_INFO, "[WvsLogin][RegisterCenterAck]Center Server 認證完成，與世界伺服器連線成功建立。\n");
 		OnUpdateWorldInfo(iPacket);
 		break;
 	}
-	case CenterPacketFlag::CenterStatChanged:
-		mWorldInfo.nGameCount = iPacket->Decode2();
+	case CenterSendPacketFlag::CenterStatChanged:
+		OnUpdateChannelInfo(iPacket);
 		break;
-	case CenterPacketFlag::CharacterListResponse:
+	case CenterSendPacketFlag::CharacterListResponse:
 		OnCharacterListResponse(iPacket);
 		break;
-	case CenterPacketFlag::GameServerInfoResponse:
+	case CenterSendPacketFlag::GameServerInfoResponse:
 		OnGameServerInfoResponse(iPacket);
 
 		break;
@@ -108,24 +76,37 @@ void Center::OnPacket(InPacket *iPacket)
 
 void Center::OnClosed()
 {
+}
 
+void Center::OnUpdateChannelInfo(InPacket * iPacket)
+{
+	m_WorldInfo.nGameCount = iPacket->Decode2();
+	memset(m_WorldInfo.m_aChannelStatus, 0, sizeof(int) * ServerConstants::kMaxChannelCount);
+	for (int i = 0; i < m_WorldInfo.nGameCount; ++i)
+		m_WorldInfo.m_aChannelStatus[(iPacket->Decode1())] = 1;
 }
 
 void Center::OnUpdateWorldInfo(InPacket *iPacket)
 {
-	mWorldInfo.nWorldID = iPacket->Decode1();
-	mWorldInfo.nEventType = iPacket->Decode1();
-	mWorldInfo.strWorldDesc = iPacket->DecodeStr();
-	mWorldInfo.strEventDesc = iPacket->DecodeStr();
-	printf("[WvsLogin][Center::OnUpdateWorld]遊戲伺服器世界資訊更新。\n");
+	m_WorldInfo.nWorldID = iPacket->Decode1();
+	m_WorldInfo.nEventType = iPacket->Decode1();
+	m_WorldInfo.strWorldDesc = iPacket->DecodeStr();
+	m_WorldInfo.strEventDesc = iPacket->DecodeStr();
+	WvsLogger::LogRaw(WvsLogger::LEVEL_INFO, "[WvsLogin][Center::OnUpdateWorld]遊戲伺服器世界資訊更新。\n");
+}
+
+void Center::OnConnectFailed()
+{
+	WvsLogger::LogRaw(WvsLogger::LEVEL_ERROR, "[WvsShop][Center::OnConnect]無法連線到Center Server，可能是服務尚未啟動或者確認連線資訊。\n");
+	OnDisconnect();
 }
 
 void Center::OnCharacterListResponse(InPacket *iPacket)
 {
-	int nLoginSocketID = iPacket->Decode4();
-	auto pSocket = WvsBase::GetInstance<WvsLogin>()->GetSocketList()[nLoginSocketID];
+	unsigned int nLoginSocketID = iPacket->Decode4();
+	auto pSocket = WvsBase::GetInstance<WvsLogin>()->GetSocket(nLoginSocketID);
 	OutPacket oPacket;
-	oPacket.Encode2(LoginPacketFlag::ClientSelectWorldResult);
+	oPacket.Encode2(LoginSendPacketFlag::Client_ClientSelectWorldResult);
 	oPacket.Encode1(0);
 	oPacket.EncodeStr("normal");
 	oPacket.Encode4(0);
@@ -134,9 +115,9 @@ void Center::OnCharacterListResponse(InPacket *iPacket)
 	oPacket.Encode8(0);
 	oPacket.Encode1(0);
 
-	printf("[WvsLogin][Center::OnCharacterListResponse]玩家擁有角色清單封包 : ");
+	WvsLogger::LogRaw("[WvsLogin][Center::OnCharacterListResponse]玩家擁有角色清單封包 : ");
 	iPacket->Print();
-	printf("\n");
+	WvsLogger::LogRaw("\n");
 
 	oPacket.EncodeBuffer(iPacket->GetPacket() + 6, iPacket->GetPacketSize() - 6);
 
@@ -162,7 +143,7 @@ void Center::OnCharacterListResponse(InPacket *iPacket)
 	oPacket.Encode4(0);
 	oPacket.Encode4(-1);
 	oPacket.Encode1(0);
-	oPacket.Encode8(-1);
+	oPacket.Encode8(GameDateTime::TIME_UNLIMITED);
 	oPacket.Encode1(0);
 	oPacket.Encode1(0);
 	oPacket.Encode4(0);
@@ -175,10 +156,15 @@ void Center::OnCharacterListResponse(InPacket *iPacket)
 
 void Center::OnGameServerInfoResponse(InPacket *iPacket)
 {
-	int nLoginSocketID = iPacket->Decode4();
-	auto pSocket = WvsBase::GetInstance<WvsLogin>()->GetSocketList()[nLoginSocketID]; 
+	unsigned int nLoginSocketID = iPacket->Decode4();
+	auto pSocket = WvsBase::GetInstance<WvsLogin>()->GetSocket(nLoginSocketID); 
 	OutPacket oPacket;
-	oPacket.Encode2(LoginPacketFlag::ClientSelectCharacterResult);
+	oPacket.Encode2(LoginSendPacketFlag::Client_ClientSelectCharacterResult);
 	oPacket.EncodeBuffer(iPacket->GetPacket() + 6, iPacket->GetPacketSize() - 6);
 	pSocket->SendPacket(&oPacket);
+}
+
+void Center::OnNotifyCenterDisconnected(SocketBase * pSocket)
+{
+	WvsLogger::LogRaw("[WvsLogin][Center]與Center Server中斷連線。\n");
 }

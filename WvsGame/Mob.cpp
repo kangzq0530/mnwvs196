@@ -4,12 +4,15 @@
 #include "..\Database\GW_ItemSlotBundle.h"
 #include "Reward.h"
 #include "DropPool.h"
-#include "Utility\Random\Rand32.h"
 #include "User.h"
-#include "Net\OutPacket.h"
 #include "ItemInfo.h"
 #include "QWUser.h"
 #include "Field.h"
+
+#include "..\WvsLib\DateTime\GameDateTime.h"
+#include "..\WvsLib\Random\Rand32.h"
+#include "..\WvsLib\Net\OutPacket.h"
+#include "..\WvsLib\Net\PacketFlags\MobPacketFlags.hpp"
 
 Mob::Mob()
 {
@@ -21,14 +24,14 @@ Mob::~Mob()
 
 void Mob::MakeEnterFieldPacket(OutPacket *oPacket)
 {
-	oPacket->Encode2(0x3C1); //MobPool::SpawnMonster
+	oPacket->Encode2(MobSendPacketFlag::Mob_OnMakeEnterFieldPacket); //MobPool::SpawnMonster
 	oPacket->Encode1(0);
 	EncodeInitData(oPacket);
 }
 
 void Mob::MakeLeaveFieldPacket(OutPacket * oPacket)
 {
-	oPacket->Encode2(0x3C2); //MobPool::SpawnMonster
+	oPacket->Encode2(MobSendPacketFlag::Mob_OnMakeLeaveFieldPacket); //MobPool::SpawnMonster
 	oPacket->Encode4(GetFieldObjectID());
 	oPacket->Encode1(1);
 }
@@ -166,21 +169,19 @@ void Mob::SendChangeControllerPacket(User* pUser, int nLevel)
 	if (nLevel)
 	{
 		OutPacket oPacket;
-		oPacket.Encode2(0x3C3);
+		oPacket.Encode2(MobSendPacketFlag::Mob_OnMobChangeController);
 		oPacket.Encode1(nLevel);
 		EncodeInitData(&oPacket, true);
 		pUser->SendPacket(&oPacket);
 	}
 	else
-	{
 		SendReleaseControllPacket(pUser, GetFieldObjectID());
-	}
 }
 
 void Mob::SendReleaseControllPacket(User* pUser, int dwMobID)
 {
 	OutPacket oPacket;
-	oPacket.Encode2(0x3C3);
+	oPacket.Encode2(MobSendPacketFlag::Mob_OnMobChangeController);
 	oPacket.Encode1(0);
 	oPacket.Encode4(dwMobID);
 	//EncodeInitData(&oPacket);
@@ -232,13 +233,13 @@ bool Mob::IsLucidSpecialMob(int dwTemplateID)
 void Mob::OnMobHit(User * pUser, long long int nDamage, int nAttackType)
 {
 	m_mAttackRecord[pUser->GetUserID()] += nDamage;
-	this->SetHp(this->GetHp() - nDamage);
-	if (GetHp() > 0)
+	this->SetHP(this->GetHP() - nDamage);
+	if (GetHP() > 0)
 	{
 		OutPacket oPacket;
-		oPacket.Encode2(0x3D5);
+		oPacket.Encode2(MobSendPacketFlag::Mob_OnHPIndicator);
 		oPacket.Encode4(GetFieldObjectID());
-		oPacket.Encode1((char)((GetHp() / GetMobTemplate()->m_lnMaxHP) * 100));
+		oPacket.Encode1((char)((GetHP() / GetMobTemplate()->m_lnMaxHP) * 100));
 		pUser->SendPacket(&oPacket);
 	}
 }
@@ -257,8 +258,6 @@ void Mob::OnMobDead(int nHitX, int nHitY, int nMesoUp, int nMesoUpByItem)
 	);
 	int nOwnType, nOwnPartyID, nLastDamageCharacterID;
 	DistributeExp(nOwnType, nOwnPartyID, nLastDamageCharacterID);
-
-	delete this;
 }
 
 void Mob::DistributeExp(int & refOwnType, int & refOwnParyID, int & refLastDamageCharacterID)
@@ -269,7 +268,7 @@ void Mob::DistributeExp(int & refOwnType, int & refOwnParyID, int & refLastDamag
 		auto pUser = User::FindUser(dmg.first);
 		if (pUser != nullptr)
 		{
-			int nDamaged = dmg.second;
+			auto nDamaged = dmg.second;
 			if (nDamaged >= nTotalHP)
 				nDamaged = nTotalHP;
 			int nIncEXP = (int)floor((double)GetMobTemplate()->m_nEXP * ((double)dmg.second / (double)nTotalHP));
@@ -281,49 +280,56 @@ void Mob::DistributeExp(int & refOwnType, int & refOwnParyID, int & refLastDamag
 
 void Mob::GiveReward(unsigned int dwOwnerID, unsigned int dwOwnPartyID, int nOwnType, int nX, int nY, int tDelay, int nMesoUp, int nMesoUpByItem)
 {
-	const auto pReward = m_pMobTemplate->GetMobReward();
-	const auto& aReward = m_pMobTemplate->GetMobReward()->GetRewardList();
-	Reward* pDrop = nullptr;
+	auto pReward = m_pMobTemplate->GetMobReward();
+	if(!pReward)
+		pReward = m_pMobTemplate->m_pReward = GW_MobReward::GetInstance()->GetMobReward(m_nTemplateID);
 
 	int nDiff, nRange;
 	bool bMoneyDropped = false;
-
 	std::pair<int, int> prDropPos;
 
-	for (const auto& pInfo : aReward)
+	const auto& aReward = m_pMobTemplate->GetMobReward()->GetRewardList();
+	Reward* pDrop = nullptr;
+	if (pReward) 
 	{
-		long long int liRnd = ((unsigned int)Rand32::GetInstance()->Random()) % pReward->GetTotalWeight();
-		if (liRnd < pInfo->nWeight)
+		int nDropCount = 0;
+		for (const auto& pInfo : aReward)
 		{
-			prDropPos = GetDropPos();
-			nDiff = pInfo->nCountMax - pInfo->nCountMin;
-			nRange = pInfo->nCountMin + (nDiff == 0 ? 0 : ((unsigned int)Rand32::GetInstance()->Random()) % nDiff);
-			pDrop = new Reward;
-			if (pInfo->nItemID == 0)
-				bMoneyDropped = true;
-			pDrop->SetMoney(pInfo->nItemID == 0 ? nRange : 0);
-			if (pInfo->nItemID != 0)
+			long long int liRnd = ((unsigned int)Rand32::GetInstance()->Random()) % pReward->GetTotalWeight();
+			if (liRnd < pInfo->nWeight)
 			{
-				auto pItem = ItemInfo::GetInstance()->GetItemSlot(pInfo->nItemID, ItemInfo::ItemVariationOption::ITEMVARIATION_NORMAL);
-				pDrop->SetItem(pItem);
-				if (pInfo->nItemID / 1000000 != 1)
-					((GW_ItemSlotBundle*)pItem)->nNumber = nRange;
+				++nDropCount;
+				prDropPos = { GetPosX(), GetPosY() };
+				prDropPos.first = (prDropPos.first + ((nDropCount % 2 == 0) ? (25 * (nDropCount + 1) / 2) : -(25 * (nDropCount / 2))));
+				nDiff = pInfo->nCountMax - pInfo->nCountMin;
+				nRange = pInfo->nCountMin + (nDiff == 0 ? 0 : ((unsigned int)Rand32::GetInstance()->Random()) % nDiff);
+				pDrop = AllocObj(Reward);
+				if (pInfo->nItemID == 0)
+					bMoneyDropped = true;
+				pDrop->SetMoney(pInfo->nItemID == 0 ? nRange : 0);
+				if (pInfo->nItemID != 0)
+				{
+					auto pItem = ItemInfo::GetInstance()->GetItemSlot(pInfo->nItemID, ItemInfo::ItemVariationOption::ITEMVARIATION_NORMAL);
+					pDrop->SetItem(pItem);
+					if (pInfo->nItemID / 1000000 != 1)
+						((GW_ItemSlotBundle*)pItem)->nNumber = nRange;
+				}
+				pDrop->SetType(1);
+				GetField()->GetDropPool()->Create(
+					pDrop,
+					dwOwnerID,
+					dwOwnPartyID,
+					nOwnType,
+					GetTemplateID(),
+					prDropPos.first,
+					prDropPos.second,
+					prDropPos.first,
+					prDropPos.second,
+					0,
+					1,
+					0,
+					0);
 			}
-			pDrop->SetType(1);
-			GetField()->GetDropPool()->Create(
-				pDrop,
-				dwOwnerID,
-				dwOwnPartyID,
-				nOwnType,
-				GetTemplateID(),
-				prDropPos.first,
-				prDropPos.second,
-				prDropPos.first,
-				prDropPos.second,
-				0,
-				1,
-				0,
-				0);
 		}
 	}
 
@@ -332,7 +338,7 @@ void Mob::GiveReward(unsigned int dwOwnerID, unsigned int dwOwnPartyID, int nOwn
 		prDropPos = GetDropPos();
 		int nRange = (int)ceil((double)GetMobTemplate()->m_nLevel / 2.0) + ((unsigned int)(Rand32::GetInstance()->Random())) % (GetMobTemplate()->m_nLevel * 2);
 		//printf("Drop Meso : Monster Level : %d Rnd : %d\n", (int)ceil((double)GetMobTemplate()->m_nLevel / 2.0), ((unsigned int)(Rand32::GetInstance()->Random())) % (GetMobTemplate()->m_nLevel * 2));
-		pDrop = new Reward;
+		pDrop = AllocObj(Reward);
 		pDrop->SetItem(nullptr);
 		pDrop->SetMoney(nRange);
 		pDrop->SetType(0);
@@ -351,6 +357,26 @@ void Mob::GiveReward(unsigned int dwOwnerID, unsigned int dwOwnPartyID, int nOwn
 			0,
 			0);
 	}
+}
+
+void Mob::SetHP(long long int liHP)
+{
+	m_liHP = liHP;
+}
+
+void Mob::SetMP(long long int liMP)
+{
+	m_liMP = liMP;
+}
+
+long long int Mob::GetHP() const
+{
+	return m_liHP;
+}
+
+long long int Mob::GetMP() const
+{
+	return m_liMP;
 }
 
 std::pair<int, int> Mob::GetDropPos()

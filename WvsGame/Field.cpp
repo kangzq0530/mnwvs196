@@ -1,43 +1,62 @@
 #include "Field.h"
 #include "LifePool.h"
-#include "MobPacketFlags.h"
-#include "Net\InPacket.h"
-#include "Net\OutPacket.h"
+#include "..\WvsLib\Net\PacketFlags\UserPacketFlags.hpp"
+#include "..\WvsLib\Net\PacketFlags\ReactorPacketFlags.hpp"
+#include "..\WvsLib\Net\PacketFlags\MobPacketFlags.hpp"
+#include "..\WvsLib\Net\PacketFlags\NpcPacketFlags.hpp"
+#include "..\WvsLib\Net\InPacket.h"
+#include "..\WvsLib\Net\OutPacket.h"
+#include "..\WvsLib\DateTime\GameDateTime.h"
+#include "..\WvsLib\Logger\WvsLogger.h"
 #include "Mob.h"
 #include "MovePath.h"
 #include "PortalMap.h"
 #include "TownPortalPool.h"
+#include "ReactorPool.h"
+#include "SummonedPool.h"
 #include "DropPool.h"
+#include "FieldSet.h"
+#include "User.h"
+#include "..\WvsLib\Task\AsyncScheduler.h"
+#include "WvsPhysicalSpace2D.h"
 
 #include <mutex>
 #include <functional>
 
-
-std::mutex fieldUserMutex;
-
 Field::Field()
-	: m_pLifePool(new LifePool), 
-	  m_updateBinder(std::bind(&Field::UpdateTrigger, this)),
-	  m_pPortalMap(new PortalMap),
-	  m_pTownPortalPool(new TownPortalPool)
+	: m_pLifePool(AllocObj(LifePool)),
+	  m_pPortalMap(AllocObj(PortalMap)),
+	  m_pTownPortalPool(AllocObj(TownPortalPool)),
+	  m_pReactorPool(AllocObj(ReactorPool)),
+	  m_pSpace2D(AllocObj(WvsPhysicalSpace2D))
 {
-	m_pDropPool = new DropPool(this);
-	m_asyncUpdateTimer = AsnycScheduler::CreateTask(m_updateBinder, 5000, true);
+	m_pDropPool = AllocObjCtor(DropPool)(this);
+	m_pSummonedPool = AllocObjCtor(SummonedPool)(this);
+	//m_asyncUpdateTimer = AsyncScheduler::CreateTask(std::bind(&Field::UpdateTrigger, this), 5000, true);
 	//this->m_asyncUpdateTimer = (void*)timer;
 	InitLifePool();
 }
 
 Field::~Field()
 {
-	delete m_pLifePool;
-	delete m_pPortalMap;
-	m_asyncUpdateTimer->Abort();
-	delete m_asyncUpdateTimer;
+	FreeObj(m_pLifePool);
+	FreeObj(m_pPortalMap);
+	FreeObj(m_pDropPool);
+	FreeObj(m_pSummonedPool);
+	FreeObj(m_pSpace2D);
+	FreeObj(m_pReactorPool);
+	FreeObj(m_pTownPortalPool);
+	//m_asyncUpdateTimer->Abort();
+	//delete m_asyncUpdateTimer;
 }
 
 void Field::BroadcastPacket(OutPacket * oPacket)
 {
-	std::lock_guard<std::mutex> userGuard(fieldUserMutex);
+	std::lock_guard<std::mutex> userGuard(m_mtxFieldUserMutex);
+	oPacket->GetSharedPacket()->ToggleBroadcasting();
+
+	if (m_mUser.size() == 0)
+		return;
 	for (auto& user : m_mUser)
 		user.second->SendPacket(oPacket);
 }
@@ -177,29 +196,41 @@ void Field::SetUserEnter(const std::string & script)
 	m_strUserEnter = script;
 }
 
-void Field::SetMapSizeX(int x)
+void Field::SetMapSize(int x, int y)
 {
-	m_nMapSizeX = x;
+	m_szMap.x = x;
+	m_szMap.y = y;
 }
 
-int Field::GetMapSizeX()
+const FieldPoint & Field::GetMapSize() const
 {
-	return m_nMapSizeX;
+	return m_szMap;
 }
 
-void Field::SetMapSizeY(int y)
+void Field::SetLeftTop(int x, int y)
 {
-	m_nMapSizeY = y;
+	m_ptLeftTop.x = x;
+	m_ptLeftTop.y = y;
 }
 
-int Field::GetMapSizeY()
+const FieldPoint & Field::GetLeftTop() const
 {
-	return m_nMapSizeY;
+	return m_ptLeftTop;
+}
+
+void Field::SetFieldSet(FieldSet * pFieldSet)
+{
+	m_pParentFieldSet = pFieldSet;
+}
+
+FieldSet * Field::GetFieldSet()
+{
+	return m_pParentFieldSet;
 }
 
 void Field::InitLifePool()
 {
-	std::lock_guard<std::mutex> lifePoolGuard(fieldUserMutex);
+	std::lock_guard<std::mutex> lifePoolGuard(m_mtxFieldUserMutex);
 	m_pLifePool->Init(this, m_nFieldID);
 }
 
@@ -215,27 +246,46 @@ DropPool * Field::GetDropPool()
 
 void Field::OnEnter(User *pUser)
 {
-	std::lock_guard<std::mutex> userGuard(fieldUserMutex);
-	if (!m_asyncUpdateTimer->IsStarted())
-		m_asyncUpdateTimer->Start();
-	m_mUser[pUser->GetUserID()] = pUser;
+	std::lock_guard<std::mutex> userGuard(m_mtxFieldUserMutex);
+	//if (!m_asyncUpdateTimer->IsStarted())
+	//	m_asyncUpdateTimer->Start();
+	m_mUser.insert({ pUser->GetUserID(), pUser });
 	m_pLifePool->OnEnter(pUser);
 	m_pDropPool->OnEnter(pUser);
+	m_pReactorPool->OnEnter(pUser);
+	if (m_pParentFieldSet != nullptr)
+		m_pParentFieldSet->OnUserEnterField(pUser);
+
+	OutPacket oPacketForBroadcasting;
+	pUser->MakeEnterFieldPacket(&oPacketForBroadcasting);
+	for (auto pFieldUser : m_mUser) 
+	{
+		if (pFieldUser.second != pUser)
+		{
+			pFieldUser.second->SendPacket(&oPacketForBroadcasting);
+
+			OutPacket oPacketToTarget;
+			pFieldUser.second->MakeEnterFieldPacket(&oPacketToTarget);
+			pUser->SendPacket(&oPacketToTarget);
+		}
+	}
 }
 
 void Field::OnLeave(User * pUser)
 {
-	std::lock_guard<std::mutex> userGuard(fieldUserMutex);
+	std::lock_guard<std::mutex> userGuard(m_mtxFieldUserMutex);
 	m_mUser.erase(pUser->GetUserID());
 	m_pLifePool->RemoveController(pUser);
-	if (m_mUser.size() == 0 && m_asyncUpdateTimer->IsStarted())
-		m_asyncUpdateTimer->Abort();
+	//if (m_mUser.size() == 0 && m_asyncUpdateTimer->IsStarted())
+	//	m_asyncUpdateTimer->Pause();
 }
 
 //發送oPacket給該地圖的其他User，其中pExcept是例外對象
 void Field::SplitSendPacket(OutPacket *oPacket, User *pExcept)
 {
-	std::lock_guard<std::mutex> userGuard(fieldUserMutex);
+	std::lock_guard<std::mutex> userGuard(m_mtxFieldUserMutex);
+	oPacket->GetSharedPacket()->ToggleBroadcasting();
+
 	for (auto& user : m_mUser)
 	{
 		if ((pExcept == nullptr) || user.second->GetUserID() != pExcept->GetUserID())
@@ -246,16 +296,12 @@ void Field::SplitSendPacket(OutPacket *oPacket, User *pExcept)
 void Field::OnPacket(User* pUser, InPacket *iPacket)
 {
 	int nType = iPacket->Decode2();
-	if (nType >= 0x369 && nType <= 0x384)
+	if (nType >= FlagMin(MobRecvPacketFlag) && nType <= 0x384)
 		m_pLifePool->OnPacket(pUser, nType, iPacket);
 	else if (nType == 0x38B)
 		m_pDropPool->OnPacket(pUser, nType, iPacket);
-	//if(nHeader >= )
-	/*if (nHeader >= MobRecvPacketFlag::MobRecvPacketFlag::minFlag && nHeader <= MobRecvPacketFlag::MobRecvPacketFlag::maxFlag)
-	{
-		printf("Mob Packet Received %d.\n", (int)nHeader);
-	}*/
-
+	else if (nType >= FlagMin(ReactorRecvPacketFlag) && nType <= FlagMax(ReactorRecvPacketFlag))
+		m_pReactorPool->OnPacket(pUser, nType, iPacket);
 }
 
 void Field::OnUserMove(User * pUser, InPacket * iPacket)
@@ -268,10 +314,10 @@ void Field::OnUserMove(User * pUser, InPacket * iPacket)
 	auto& lastElem = movePath.m_lElem.rbegin();
 	pUser->SetMovePosition(lastElem->x, lastElem->y, lastElem->bMoveAction, lastElem->fh);
 	OutPacket oPacket;
-	oPacket.Encode2(0x295);
+	oPacket.Encode2(UserSendPacketFlag::UserRemote_OnMove);
 	oPacket.Encode4(pUser->GetUserID());
 	movePath.Encode(&oPacket);
-	BroadcastPacket(&oPacket);
+	this->SplitSendPacket(&oPacket, pUser);
 }
 
 PortalMap * Field::GetPortalMap()
@@ -282,6 +328,26 @@ PortalMap * Field::GetPortalMap()
 TownPortalPool * Field::GetTownPortalPool()
 {
 	return m_pTownPortalPool;
+}
+
+ReactorPool * Field::GetReactorPool()
+{
+	return m_pReactorPool;
+}
+
+SummonedPool * Field::GetSummonedPool()
+{
+	return m_pSummonedPool;
+}
+
+std::mutex & Field::GetFieldLock()
+{
+	return m_mtxFieldLock;
+}
+
+WvsPhysicalSpace2D * Field::GetSpace2D()
+{
+	return m_pSpace2D;
 }
 
 void Field::OnMobMove(User * pCtrl, Mob * pMob, InPacket * iPacket)
@@ -337,11 +403,11 @@ void Field::OnMobMove(User * pCtrl, Mob * pMob, InPacket * iPacket)
 
 	//Encode Ctrl Ack Packet
 	OutPacket ctrlAckPacket;
-	ctrlAckPacket.Encode2(0x3C8);
+	ctrlAckPacket.Encode2(MobSendPacketFlag::Mob_OnCtrlAck);
 	ctrlAckPacket.Encode4(pMob->GetFieldObjectID());
 	ctrlAckPacket.Encode2(nMobCtrlSN);
 	ctrlAckPacket.Encode1(bNextAttackPossible);
-	ctrlAckPacket.Encode4((int)pMob->GetMp());
+	ctrlAckPacket.Encode4((int)pMob->GetMP());
 	ctrlAckPacket.Encode4(nSkillCommand);
 	ctrlAckPacket.Encode1(nSLV);
 	ctrlAckPacket.Encode4(0); //nForcedAttackIdx
@@ -349,7 +415,7 @@ void Field::OnMobMove(User * pCtrl, Mob * pMob, InPacket * iPacket)
 
 	//Encode Move Packet
 	OutPacket movePacket;
-	movePacket.Encode2(0x3C7); //CMob::OnMove
+	movePacket.Encode2(MobSendPacketFlag::Mob_OnMove); //CMob::OnMove
 	movePacket.Encode4(pMob->GetFieldObjectID());
 	movePacket.Encode1(bNextAttackPossible);
 	movePacket.Encode1(pCenterSplit);
@@ -369,23 +435,27 @@ void Field::OnMobMove(User * pCtrl, Mob * pMob, InPacket * iPacket)
 	movePacket.Encode1((char)aUnkList2.size());
 	for (short value : aUnkList2)
 		movePacket.Encode2(value);
+
 	movePath.Encode(&movePacket);
 
-	for (const auto& elem : movePath.m_lElem)
+	//for (const auto& elem : movePath.m_lElem)
 	{
+		auto& elem = *(movePath.m_lElem.rbegin());
 		pMob->SetPosX(elem.x);
-		pMob->SetPosY(elem.y - 1);
+		pMob->SetPosY(elem.y);
 		pMob->SetMoveAction(elem.bMoveAction);
-		if(elem.fh != 0)
-			pMob->SetFh(elem.fh);
+		//if(elem.fh != 0)
+		pMob->SetFh(elem.fh);
 	}
 
-	SplitSendPacket(&movePacket, nullptr);
+	//pCtrl->SendPacket(&ctrlAckPacket);
 	pCtrl->SendPacket(&ctrlAckPacket);
+	SplitSendPacket(&movePacket, pCtrl);
 }
 
 void Field::Update()
 {
-	//printf("Field Update Called\n");
+	int tCur = GameDateTime::GetTime();
 	m_pLifePool->Update();
+	m_pReactorPool->Update(tCur);
 }

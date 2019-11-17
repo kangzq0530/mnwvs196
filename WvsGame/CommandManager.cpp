@@ -11,9 +11,14 @@
 #include "USkill.h"
 #include "Field.h"
 #include "Reward.h"
+#include "Summoned.h"
+#include "Mob.h"
+#include "MobTemplate.h"
+#include "LifePool.h"
 #include "DropPool.h"
 #include <vector>
-#include "..\Common\Utility\String\StringUtility.h"
+#include "..\WvsLib\String\StringUtility.h"
+#include "..\WvsLib\DateTime\GameDateTime.h"
 
 CommandManager::CommandManager()
 {
@@ -39,8 +44,12 @@ void CommandManager::Process(User * pUser, const std::string & input)
 	{
 		for (int i = 0; i < token[0].size(); ++i)
 			token[0][i] = tolower(token[0][i]);
-
-		if (token[0] == "#item")
+		auto& sCmd = token[0];
+		if (sCmd == "#mov")
+			Summoned::SUMMONED_MOV = atoi(token[1].c_str());
+		else if(sCmd == "#att")
+			Summoned::SUMMONED_ATT = atoi(token[1].c_str());
+		else if (sCmd == "#item")
 		{
 			int nItemID = atoi(token[1].c_str());
 			if (nItemID / 1000000 >= 1)
@@ -53,6 +62,7 @@ void CommandManager::Process(User * pUser, const std::string & input)
 						&& token.size() >= 3)
 						((GW_ItemSlotBundle*)pNewItem)->nNumber = atoi(token[2].c_str());
 						
+					//pNewItem->liExpireDate = GameDateTime::GetDateExpireFromPeriod(1);
 					Reward reward;
 					reward.SetType(1);
 					reward.SetItem(pNewItem);
@@ -73,7 +83,7 @@ void CommandManager::Process(User * pUser, const std::string & input)
 				}
 			}
 		}
-		else if (token[0] == "#maxskill")
+		else if (sCmd == "#maxskill")
 		{
 			int nJob = pUser->GetCharacterData()->mStat->nJob;
 			int nLevel = nJob % 10;
@@ -93,6 +103,50 @@ void CommandManager::Process(User * pUser, const std::string & input)
 				}
 				--nLevel;
 			}
+
+			//Beginner
+			auto pSkills = SkillInfo::GetInstance()->GetSkillsByRootID((nJob / 100) * 100);
+			for (const auto& pSkill : *pSkills)
+			{
+				auto pEntry = pSkill.second;
+				auto pMaxLevelData = pEntry->GetLevelData(pEntry->GetMaxLevel());
+				USkill::OnSkillUpRequest(
+					pUser,
+					pEntry->GetSkillID(),
+					pEntry->GetMaxLevel(),
+					false,
+					false);
+			}
+		}
+		else if (sCmd == "#transfer")
+		{
+			int nFieldID = atoi(token[1].c_str());
+			pUser->TryTransferField(
+				nFieldID,
+				""
+			);
+		}
+		else if (sCmd == "#mob")
+		{
+			int nTemplateID = atoi(token[1].c_str());
+
+			Mob mob;
+			mob.SetPosX(pUser->GetPosX());
+			mob.SetPosY(pUser->GetPosY());
+			mob.SetTemplateID(nTemplateID);
+			mob.SetMobTemplate(MobTemplate::GetMobTemplate(mob.GetTemplateID()));
+			pUser->GetField()->GetLifePool()->CreateMob(
+				mob,
+				pUser->GetPosX(),
+				pUser->GetPosY(),
+				pUser->GetFh(),
+				0,
+				-2,
+				0,
+				0,
+				0,
+				nullptr
+			);
 		}
 	}
 }

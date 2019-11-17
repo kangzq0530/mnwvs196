@@ -96,6 +96,7 @@ public:
 	BasicStat();
 	~BasicStat();
 
-	virtual void SetFrom(int nFieldType, GA_Character* pChar, BasicStat* pSS, void *pFs, void* pNonBodyEquip, int nMHPForPvP, void* pPSD);
+	void SetPermanentSkillStat(GA_Character* pChar);
+	void SetFrom(GA_Character* pChar, int nMaxHPIncRate, int nMaxMPIncRate, int nBasicStatInc);
 };
 
